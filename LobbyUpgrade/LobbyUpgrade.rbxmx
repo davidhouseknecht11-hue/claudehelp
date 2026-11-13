@@ -1,0 +1,1176 @@
+<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4"><Item class="Script" referent="RBX_LobbyUpgrade"><Properties><string name="Name">LobbyUpgrade</string><bool name="Disabled">false</bool><token name="RunContext">0</token><ProtectedString name="Source"><![CDATA[-- LobbyUpgrade  (Script)
+-- Put in: ServerScriptService   (keep its two children: KitLoader and KitAnimator)
+--
+-- An ADD-ON. It does not replace any of your scripts:
+--   * LobbyService still builds the lobby and runs all the lobby rules. This script waits for it,
+--     then dresses the lobby up with the Blender kit and adds new things to do.
+--   * DisasterGameManager still runs every disaster. This script listens to the same
+--     ServerStorage.RoundEvents signal and adds sirens + a storm vortex over the island.
+-- Delete this script and everything goes back to how it was.
+--
+-- Needs the Blender models: File > Import 3D > LobbyKit.glb (the model can stay in Workspace or
+-- be moved to ServerStorage). Without the kit only the non-model extras appear.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local TweenService = game:GetService("TweenService")
+local CollectionService = game:GetService("CollectionService")
+local RunService = game:GetService("RunService")
+local Debris = game:GetService("Debris")
+
+local Kit = require(script:WaitForChild("KitLoader"))
+
+--------------------------------------------------------------------
+-- Settings
+--------------------------------------------------------------------
+local BONUS_CHEST_COINS = 20      -- coins for reaching the parkour chest (once per round per player)
+local JUMP_PAD_POWER = 95         -- launch speed of the jump pads
+local SIREN_COUNT = 4             -- sirens that rise on the island when a disaster starts
+local VORTEX_HEIGHT = 95          -- studs above the island's highest ground
+local ENABLE_DISASTER_ATMOSPHERE = true
+
+local TEX_SPARK = "rbxasset://textures/particles/sparkles_main.dds"
+local TEX_SMOKE = "rbxasset://textures/particles/smoke_main.dds"
+local WHITE = Color3.new(1, 1, 1)
+local CYAN = Color3.fromRGB(60, 230, 255)
+local GOLD = Color3.fromRGB(255, 205, 70)
+
+--------------------------------------------------------------------
+-- Shared bits
+--------------------------------------------------------------------
+-- the animations run on each player's device
+local animator = script:FindFirstChild("KitAnimator")
+if animator then
+	animator.Parent = ReplicatedStorage
+end
+
+local hasKit = Kit.load()
+if hasKit then
+	print("[LobbyUpgrade] Blender kit loaded")
+else
+	warn("[LobbyUpgrade] LobbyKit not found - import LobbyKit.glb (File > Import 3D). Running without the models.")
+end
+
+local function findOrCreateBindable(name)
+	local b = ServerStorage:FindFirstChild(name)
+	if not b then
+		b = Instance.new("BindableEvent")
+		b.Name = name
+		b.Parent = ServerStorage
+	end
+	return b
+end
+local roundEvents = findOrCreateBindable("RoundEvents")
+local awardEvent = findOrCreateBindable("AwardCoins")
+
+local DisasterConfig
+do
+	local assets = ReplicatedStorage:WaitForChild("DisasterAssets", 10)
+	local mod = assets and assets:FindFirstChild("DisasterConfig")
+	if mod then
+		local ok, result = pcall(require, mod)
+		if ok then
+			DisasterConfig = result
+		end
+	end
+end
+
+local function mk(class, props, parent)
+	local inst = Instance.new(class)
+	for key, value in pairs(props) do
+		inst[key] = value
+	end
+	inst.Parent = parent
+	return inst
+end
+
+local function ghost(parent, name, size, cf)
+	-- invisible, non-solid helper part
+	return mk("Part", {
+		Name = name,
+		Size = size,
+		CFrame = cf,
+		Anchored = true,
+		Transparency = 1,
+		CanCollide = false,
+		CanTouch = false,
+		CanQuery = false,
+		CastShadow = false,
+	}, parent)
+end
+
+local function ns(...)
+	local args = { ... }
+	local points = {}
+	for i = 1, #args, 2 do
+		table.insert(points, NumberSequenceKeypoint.new(args[i], args[i + 1]))
+	end
+	return NumberSequence.new(points)
+end
+
+local function sparkleBurst(parent, position, color, count, speed)
+	local p = ghost(parent, "Burst", Vector3.new(1, 1, 1), CFrame.new(position))
+	local e = mk("ParticleEmitter", {
+		Texture = TEX_SPARK,
+		Color = ColorSequence.new(color, WHITE),
+		Size = ns(0, 0.4, 0.2, 2.6, 1, 0),
+		Transparency = ns(0, 0, 0.7, 0.2, 1, 1),
+		Lifetime = NumberRange.new(1, 2),
+		Speed = NumberRange.new(speed * 0.5, speed),
+		SpreadAngle = Vector2.new(180, 180),
+		Acceleration = Vector3.new(0, -18, 0),
+		Drag = 1.5,
+		LightEmission = 1,
+		LightInfluence = 0,
+		Rate = 0,
+		Enabled = false,
+	}, p)
+	e:Emit(count)
+	local light = mk("PointLight", { Color = color, Range = 40, Brightness = 6 }, p)
+	TweenService:Create(light, TweenInfo.new(0.8), { Brightness = 0 }):Play()
+	Debris:AddItem(p, 3)
+end
+
+local function billboard(parent, adornee, sizeStuds, text, color)
+	local gui = mk("BillboardGui", {
+		Size = UDim2.fromScale(sizeStuds.X, sizeStuds.Y),
+		Adornee = adornee,
+		AlwaysOnTop = false,
+		MaxDistance = 350,
+		LightInfluence = 0,
+	}, parent)
+	local label = mk("TextLabel", {
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBlack,
+		Text = text,
+		TextColor3 = color,
+		TextScaled = true,
+		RichText = false,
+	}, gui)
+	mk("UIStroke", { Color = Color3.fromRGB(10, 12, 24), Thickness = 3 }, label)
+	return gui, label
+end
+
+--------------------------------------------------------------------
+-- LOBBY
+--------------------------------------------------------------------
+local setBanner = nil      -- set once the lobby banner exists
+local chestClaimed = {}    -- [Player] = true (reset every round)
+
+local function featuredText()
+	if DisasterConfig and DisasterConfig.GetFeaturedId then
+		local ok, id = pcall(DisasterConfig.GetFeaturedId)
+		local d = ok and DisasterConfig.GetDisasterById(id)
+		if d then
+			local mult = DisasterConfig.Event and DisasterConfig.Event.WeightMultiplier or 3
+			local bonus = DisasterConfig.Event and DisasterConfig.Event.CoinBonus or 0.5
+			return ("⭐ FEATURED THIS WEEK ⭐\n%s %s  •  %dx chance  •  +%d%% coins"):format(d.Emoji, string.upper(d.Name), mult, math.floor(bonus * 100 + 0.5)), d.Color
+		end
+	end
+	return "⭐ SURVIVE THE DISASTERS ⭐\nCollect coins while you wait", GOLD
+end
+
+local function upgradeLobby()
+	local lobby = workspace:WaitForChild("Lobby", 60)
+	if not lobby then
+		warn("[LobbyUpgrade] workspace.Lobby never appeared (is LobbyService running?) - lobby upgrade skipped")
+		return
+	end
+	local origin = lobby:GetAttribute("Origin")
+	local waited = 0
+	while typeof(origin) ~= "Vector3" and waited < 10 do
+		waited += task.wait(0.2)
+		origin = lobby:GetAttribute("Origin")
+	end
+	if typeof(origin) ~= "Vector3" then
+		warn("[LobbyUpgrade] Lobby has no Origin attribute - lobby upgrade skipped")
+		return
+	end
+	lobby:WaitForChild("LobbyCoin", 10)
+	task.wait(0.5) -- let LobbyService finish building
+
+	local floorY = origin.Y + 1 -- top of the lobby floor
+	local deco = mk("Folder", { Name = "LobbyUpgrade" }, workspace)
+
+	local function P(x, y, z)
+		return Vector3.new(origin.X + x, floorY + y, origin.Z + z)
+	end
+	local function facing(pos) -- stands at pos, looks at the middle of the lobby
+		return CFrame.lookAt(pos, Vector3.new(origin.X, pos.Y, origin.Z))
+	end
+	local function spawn(name, cf, opts)
+		opts = opts or {}
+		opts.parent = deco
+		return Kit.spawn(name, cf, opts)
+	end
+
+	-- 1) New deck: floating sky island with glowing rings, fence and crystals underneath.
+	--    The old floor and rails stay as (invisible) collision.
+	if spawn("Hub", CFrame.new(P(0, 0.05, 0))) then
+		for _, c in ipairs(lobby:GetChildren()) do
+			if c:IsA("BasePart") and (c.Name == "Floor" or c.Name == "Rail") then
+				c.Transparency = 1
+			end
+		end
+	end
+
+	-- 2) Kiosks become real little buildings (the old blocks keep their prompts, just hidden)
+	for oldName, propName in pairs({
+		ShopKiosk = "KioskShop",
+		QuestKiosk = "KioskQuests",
+		DailyKiosk = "KioskDaily",
+		BoardKiosk = "KioskBoard",
+	}) do
+		local base = lobby:FindFirstChild(oldName)
+		if base and base:IsA("BasePart") then
+			local pos = Vector3.new(base.Position.X, floorY, base.Position.Z)
+			if spawn(propName, facing(pos)) then
+				base.Transparency = 1
+				local top = lobby:FindFirstChild(oldName .. "Top")
+				if top and top:IsA("BasePart") then
+					top.Transparency = 1
+				end
+				local bb = base:FindFirstChildOfClass("BillboardGui")
+				if bb then
+					bb.StudsOffset = Vector3.new(0, 18, 0)
+					bb.Size = UDim2.fromOffset(240, 64)
+					bb.MaxDistance = 220
+				end
+			end
+			mk("PointLight", { Color = base.Color, Range = 26, Brightness = 1.4 }, base)
+		end
+	end
+
+	-- 3) Frames + lights around the three wall signs
+	for _, signName in ipairs({ "WelcomeSign", "StatusBoard", "LeaderboardSign" }) do
+		local sign = lobby:FindFirstChild(signName)
+		if sign and sign:IsA("BasePart") then
+			spawn("SignFrame", facing(Vector3.new(sign.Position.X, floorY, sign.Position.Z)))
+			mk("SurfaceLight", { Face = Enum.NormalId.Front, Color = CYAN, Range = 18, Brightness = 1.2, Angle = 120 }, sign)
+		end
+	end
+
+	-- 4) Crystal lamp pillars around the edge
+	for _, xz in ipairs({ { 54, 54 }, { -54, 54 }, { 54, -54 }, { -54, -54 }, { 54, 34 }, { -54, 34 }, { 54, -34 }, { -54, -34 }, { 34, -54 }, { -34, -54 } }) do
+		local pillar = spawn("Pillar", CFrame.new(P(xz[1], 0, xz[2])), { motion = nil })
+		local crystal = pillar and pillar:FindFirstChild("crystal")
+		if crystal then
+			mk("PointLight", { Color = CYAN, Range = 26, Brightness = 1.3 }, crystal)
+		end
+	end
+
+	-- 5) Centrepiece: floating mini island with a spinning tornado, orbit rings and a meteor,
+	--    a light beam you can see from the island, and a banner with the featured disaster.
+	spawn("Holo", CFrame.new(P(0, 10, 0)))
+	mk("Part", {
+		Name = "SkyBeam",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(420, 4, 4),
+		CFrame = CFrame.new(P(0, 48 + 210, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+		Color = CYAN,
+		Material = Enum.Material.Neon,
+		Transparency = 0.6,
+		Anchored = true,
+		CanCollide = false,
+		CanTouch = false,
+		CanQuery = false,
+		CastShadow = false,
+	}, deco)
+
+	local bannerPart = ghost(deco, "FeaturedBanner", Vector3.new(1, 1, 1), CFrame.new(P(0, 56, 0)))
+	local _, bannerLabel = billboard(bannerPart, bannerPart, Vector2.new(54, 11), "", GOLD)
+	local function showFeatured()
+		local text, color = featuredText()
+		bannerLabel.Text = text
+		bannerLabel.TextColor3 = color:Lerp(WHITE, 0.25)
+	end
+	showFeatured()
+	setBanner = function(disasterId)
+		local d = disasterId and DisasterConfig and DisasterConfig.GetDisasterById(disasterId)
+		if d then
+			bannerLabel.Text = ("🔴 HAPPENING NOW 🔴\n%s %s"):format(d.Emoji, string.upper(d.Name))
+			bannerLabel.TextColor3 = d.Color:Lerp(WHITE, 0.25)
+		else
+			showFeatured()
+		end
+	end
+
+	-- gentle sparkles drifting up from the whole deck
+	local sparkPart = ghost(deco, "DeckSparkles", Vector3.new(110, 1, 110), CFrame.new(P(0, 0.5, 0)))
+	mk("ParticleEmitter", {
+		Texture = TEX_SPARK,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, CYAN),
+			ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 120, 210)),
+			ColorSequenceKeypoint.new(1, GOLD),
+		}),
+		Size = ns(0, 0, 0.3, 0.9, 1, 0),
+		Transparency = ns(0, 0.2, 1, 1),
+		Lifetime = NumberRange.new(3, 6),
+		Rate = 14,
+		Speed = NumberRange.new(1.5, 4),
+		SpreadAngle = Vector2.new(15, 15),
+		EmissionDirection = Enum.NormalId.Top,
+		LightEmission = 1,
+		LightInfluence = 0,
+		RotSpeed = NumberRange.new(-60, 60),
+	}, sparkPart)
+
+	-- 6) Scenery: bobbing islands and two hot-air balloons circling the lobby
+	for i, v in ipairs({ { 105, 6, -70, 1.6 }, { -110, -8, -40, 2.1 }, { -95, 16, 80, 1.3 }, { 100, -4, 75, 1.8 }, { 20, 20, -120, 1.5 }, { -30, -12, 118, 1.2 } }) do
+		spawn("FloatIsland", CFrame.new(P(v[1], v[2], v[3])) * CFrame.Angles(0, i * 1.3, 0), {
+			scale = v[4],
+			motion = { kind = "bob", amp = 2.5, speed = 0.45, phase = i * 1.1 },
+		})
+	end
+	spawn("Balloon", CFrame.new(P(96, 46, 0)), {
+		motion = { kind = "orbit", center = P(0, 46, 0), radius = 96, speed = 5, amp = 3, phase = 0 },
+	})
+	local blue = spawn("Balloon", CFrame.new(P(-122, 62, 0)), {
+		scale = 1.25,
+		motion = { kind = "orbit", center = P(0, 62, 0), radius = 122, speed = -3.5, amp = 4, phase = 3.1 },
+	})
+	if blue and blue:FindFirstChild("envelope") then
+		blue.envelope.Color = Color3.fromRGB(70, 130, 255)
+	end
+
+	-- 7) Parkour: stepping stones up to a floating island with a bonus chest
+	local useKitSteps = Kit.has("Step")
+	local steps = { { 31, 3.5, -5 }, { 23, 7.5, -8 }, { 16, 11.5, -13 }, { 14, 15.5, -22 }, { 19, 19.5, -30 }, { 26, 23.5, -37 } }
+	for i, s in ipairs(steps) do
+		local top = P(s[1], s[2], s[3])
+		spawn("Step", CFrame.new(top) * CFrame.Angles(0, i * 0.5, 0), { motion = nil })
+		mk("Part", {
+			Name = "StepCollision",
+			Size = Vector3.new(6, 1, 6),
+			CFrame = CFrame.new(top - Vector3.new(0, 0.5, 0)),
+			Anchored = true,
+			Transparency = useKitSteps and 1 or 0,
+			Color = CYAN,
+			Material = Enum.Material.Neon,
+			CastShadow = false,
+		}, deco)
+	end
+	local startLabel = ghost(deco, "ParkourLabel", Vector3.new(1, 1, 1), CFrame.new(P(31, 9, -5)))
+	billboard(startLabel, startLabel, Vector2.new(14, 3), "⬆ PARKOUR → BONUS CHEST", GOLD).MaxDistance = 90
+
+	local islandTop = P(40, 26.5, -40)
+	local useKitIsland = spawn("FloatIsland", CFrame.new(islandTop), { scale = 1.5, name = "BonusIsland" }) ~= nil
+	mk("Part", {
+		Name = "BonusIslandCollision",
+		Shape = Enum.PartType.Cylinder,
+		Size = Vector3.new(1, 23, 23),
+		CFrame = CFrame.new(islandTop - Vector3.new(0, 0.5, 0)) * CFrame.Angles(0, 0, math.rad(90)),
+		Anchored = true,
+		Transparency = useKitIsland and 1 or 0,
+		Color = Color3.fromRGB(96, 200, 84),
+		CastShadow = false,
+	}, deco)
+
+	local chestPos = P(41, 26.5, -42)
+	local chestModel = spawn("Chest", facing(chestPos), { scale = 1.5 })
+	local chestTrigger = mk("Part", {
+		Name = "BonusChest",
+		Size = Vector3.new(9, 6, 7),
+		CFrame = facing(chestPos + Vector3.new(0, 3, 0)),
+		Anchored = true,
+		Transparency = chestModel and 1 or 0,
+		Color = GOLD,
+		Material = Enum.Material.Neon,
+		CanCollide = false,
+		CanTouch = true,
+		CanQuery = false,
+		CastShadow = false,
+	}, deco)
+	mk("PointLight", { Color = GOLD, Range = 22, Brightness = 2 }, chestTrigger)
+	local chestSparks = mk("ParticleEmitter", {
+		Texture = TEX_SPARK,
+		Color = ColorSequence.new(GOLD, WHITE),
+		Size = ns(0, 0, 0.3, 1.2, 1, 0),
+		Lifetime = NumberRange.new(1, 2),
+		Rate = 6,
+		Speed = NumberRange.new(2, 5),
+		SpreadAngle = Vector2.new(40, 40),
+		EmissionDirection = Enum.NormalId.Top,
+		LightEmission = 1,
+		LightInfluence = 0,
+	}, chestTrigger)
+	local chestLabelPart = ghost(deco, "ChestLabel", Vector3.new(1, 1, 1), CFrame.new(chestPos + Vector3.new(0, 10, 0)))
+	billboard(chestLabelPart, chestLabelPart, Vector2.new(13, 3.2), ("🎁 BONUS CHEST  +%d 🪙"):format(BONUS_CHEST_COINS), GOLD).MaxDistance = 160
+
+	chestTrigger.Touched:Connect(function(hit)
+		local character = hit:FindFirstAncestorOfClass("Model")
+		local player = character and Players:GetPlayerFromCharacter(character)
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if not player or not humanoid or humanoid.Health <= 0 or chestClaimed[player] then
+			return
+		end
+		chestClaimed[player] = true
+		awardEvent:Fire(player, BONUS_CHEST_COINS, "lobby_bonus_chest")
+		chestSparks:Emit(60)
+		sparkleBurst(deco, chestPos + Vector3.new(0, 5, 0), GOLD, 50, 28)
+		local popPart = ghost(deco, "ChestPopup", Vector3.new(1, 1, 1), CFrame.new(chestPos + Vector3.new(0, 6, 0)))
+		local popGui, popLabel = billboard(popPart, popPart, Vector2.new(12, 3), ("%s  +%d 🪙"):format(player.DisplayName, BONUS_CHEST_COINS), WHITE)
+		popGui.AlwaysOnTop = true
+		TweenService:Create(popPart, TweenInfo.new(1.6), { CFrame = popPart.CFrame + Vector3.new(0, 7, 0) }):Play()
+		TweenService:Create(popLabel, TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { TextTransparency = 1 }):Play()
+		Debris:AddItem(popPart, 1.8)
+	end)
+
+	-- 8) Jump pads
+	for _, xz in ipairs({ { -34, -34 }, { -34, 28 } }) do
+		local pos = P(xz[1], 0, xz[2])
+		local model = spawn("JumpPad", CFrame.new(pos))
+		local pad = mk("Part", {
+			Name = "JumpPad",
+			Shape = model and Enum.PartType.Block or Enum.PartType.Cylinder,
+			Size = model and Vector3.new(6.5, 2.4, 6.5) or Vector3.new(0.8, 7, 7),
+			CFrame = model and CFrame.new(pos + Vector3.new(0, 1.2, 0)) or (CFrame.new(pos + Vector3.new(0, 0.4, 0)) * CFrame.Angles(0, 0, math.rad(90))),
+			Anchored = true,
+			Transparency = model and 1 or 0.1,
+			Color = Color3.fromRGB(90, 255, 140),
+			Material = Enum.Material.Neon,
+			CanCollide = false,
+			CanTouch = true,
+			CanQuery = false,
+			CastShadow = false,
+		}, deco)
+		pad:SetAttribute("Power", JUMP_PAD_POWER)
+		mk("PointLight", { Color = pad.Color, Range = 16, Brightness = 1.5 }, pad)
+		CollectionService:AddTag(pad, "KitJumpPad")
+	end
+
+	-- 9) Star coins: a kit coin rides on every lobby coin (the plain coin is hidden on screen)
+	if Kit.has("Coin") then
+		for _, coin in ipairs(lobby:GetChildren()) do
+			if coin.Name == "LobbyCoin" and coin:IsA("BasePart") then
+				spawn("Coin", CFrame.new(coin.Position), { scale = 1.15, motion = { kind = "follow", target = coin } })
+			end
+		end
+	end
+
+	print("[LobbyUpgrade] Lobby upgraded")
+end
+
+--------------------------------------------------------------------
+-- DISASTER ATMOSPHERE  (sirens + storm vortex + all-clear fireworks)
+--------------------------------------------------------------------
+local atmo = nil      -- { folder, vortexes = {}, sirens = { {model, upCF, downCF} } }
+local atmoToken = 0
+local rng = Random.new()
+
+local function islandBounds()
+	local island = workspace:FindFirstChild("IslandMap")
+	local ground = island and (island:FindFirstChild("Ground") or island)
+	local water = island and island:FindFirstChild("Water")
+	local lo, hi
+	if ground then
+		for _, d in ipairs(ground:GetDescendants()) do
+			if d:IsA("BasePart") and not (water and water:IsAncestorOf(d)) then
+				local a, b = d.Position - d.Size / 2, d.Position + d.Size / 2
+				lo = lo and Vector3.new(math.min(lo.X, a.X), math.min(lo.Y, a.Y), math.min(lo.Z, a.Z)) or a
+				hi = hi and Vector3.new(math.max(hi.X, b.X), math.max(hi.Y, b.Y), math.max(hi.Z, b.Z)) or b
+			end
+		end
+	end
+	if not lo then
+		return nil
+	end
+	return lo, hi, ground
+end
+
+-- moves a prop smoothly between two CFrames (server side, a couple of seconds at most)
+local function glide(model, fromCF, toCF, seconds, style, direction)
+	local elapsed = 0
+	while elapsed < seconds and model.Parent do
+		elapsed += RunService.Heartbeat:Wait()
+		local a = TweenService:GetValue(math.clamp(elapsed / seconds, 0, 1), style, direction)
+		model:PivotTo(fromCF:Lerp(toCF, a))
+	end
+	if model.Parent then
+		model:PivotTo(toCF)
+	end
+end
+
+local function clearAtmosphere(old, instant)
+	if not old then
+		return
+	end
+	if instant then
+		old.folder:Destroy()
+		return
+	end
+	for _, vortex in ipairs(old.vortexes) do
+		Kit.fade(vortex, false, 2.5)
+	end
+	for _, siren in ipairs(old.sirens) do
+		task.spawn(glide, siren.model, siren.upCF, siren.downCF, 1.4, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	end
+	Debris:AddItem(old.folder, 3.5)
+end
+
+local function startAtmosphere(disasterId)
+	atmoToken += 1
+	local token = atmoToken
+	clearAtmosphere(atmo, true)
+	atmo = nil
+
+	local lo, hi, ground = islandBounds()
+	if not lo then
+		return
+	end
+	local d = DisasterConfig and disasterId and DisasterConfig.GetDisasterById(disasterId)
+	local color = d and d.Color or Color3.fromRGB(255, 70, 70)
+	local mythic = d and d.Rarity == "Mythic"
+	local center = (lo + hi) / 2
+	local span = math.max(hi.X - lo.X, hi.Z - lo.Z)
+
+	local folder = mk("Folder", { Name = "DisasterAtmosphere" }, workspace)
+	local state = { folder = folder, vortexes = {}, sirens = {} }
+	atmo = state
+
+	-- storm vortex spinning over the island, glowing in the disaster's colour
+	local function addVortex(height, scale, tint, yaw)
+		local vortex = Kit.spawn("StormRing", CFrame.new(center.X, hi.Y + height, center.Z) * CFrame.Angles(0, yaw, 0), {
+			scale = scale,
+			tint = tint,
+			parent = folder,
+			shadows = false,
+			noCull = true,
+		})
+		if vortex then
+			Kit.setTransparency(vortex, 1)
+			Kit.fade(vortex, true, 3)
+			table.insert(state.vortexes, vortex)
+		end
+		return vortex
+	end
+	local baseScale = math.clamp(span * 0.6 / 100, 0.8, 3)
+	addVortex(VORTEX_HEIGHT, baseScale, color, 0)
+	if mythic then
+		addVortex(VORTEX_HEIGHT - 28, baseScale * 0.55, color:Lerp(WHITE, 0.5), 1)
+	end
+
+	-- lightning flickers inside the cloud
+	task.spawn(function()
+		while atmoToken == token and folder.Parent do
+			task.wait(rng:NextNumber(1.5, 4.5))
+			if atmoToken ~= token or not folder.Parent then
+				break
+			end
+			for _, vortex in ipairs(state.vortexes) do
+				local arms = vortex:FindFirstChild("arms" .. rng:NextInteger(0, 1))
+				if arms then
+					local oldColor, oldMaterial = arms.Color, arms.Material
+					for _ = 1, 2 do
+						arms.Color = color:Lerp(WHITE, 0.7)
+						arms.Material = Enum.Material.Neon
+						task.wait(0.07)
+						arms.Color = oldColor
+						arms.Material = oldMaterial
+						task.wait(0.06)
+					end
+				end
+			end
+		end
+	end)
+
+	-- sirens burst out of the ground with spinning beacons
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Include
+	params.FilterDescendantsInstances = { ground }
+	for i = 1, SIREN_COUNT do
+		local angle = (i - 0.5) / SIREN_COUNT * math.pi * 2
+		local x = center.X + math.cos(angle) * (hi.X - lo.X) * 0.3
+		local z = center.Z + math.sin(angle) * (hi.Z - lo.Z) * 0.3
+		local hit = workspace:Raycast(Vector3.new(x, hi.Y + 60, z), Vector3.new(0, -(hi.Y - lo.Y) - 120, 0), params)
+		if hit then
+			local scale = 1.4
+			local upCF = CFrame.new(hit.Position) * CFrame.Angles(0, angle, 0)
+			local downCF = upCF - Vector3.new(0, 26 * scale, 0)
+			local siren = Kit.spawn("Siren", downCF, { scale = scale, tint = color, parent = folder })
+			if siren then
+				table.insert(state.sirens, { model = siren, upCF = upCF, downCF = downCF })
+				local beacon = siren:FindFirstChild("beacon")
+				if beacon then
+					mk("PointLight", { Color = color, Range = 30, Brightness = 3 }, beacon)
+					for _, face in ipairs({ Enum.NormalId.Right, Enum.NormalId.Left }) do
+						mk("SpotLight", { Color = color, Face = face, Range = 60, Angle = 50, Brightness = 8 }, beacon)
+					end
+				end
+				task.delay((i - 1) * 0.25, function()
+					if atmoToken ~= token or not siren.Parent then
+						return
+					end
+					local dust = ghost(folder, "SirenDust", Vector3.new(6, 1, 6), CFrame.new(hit.Position))
+					mk("ParticleEmitter", {
+						Texture = TEX_SMOKE,
+						Color = ColorSequence.new(Color3.fromRGB(190, 175, 150)),
+						Size = ns(0, 3, 1, 12),
+						Transparency = ns(0, 0.4, 1, 1),
+						Lifetime = NumberRange.new(1, 2),
+						Speed = NumberRange.new(6, 16),
+						SpreadAngle = Vector2.new(70, 70),
+						EmissionDirection = Enum.NormalId.Top,
+						Drag = 2,
+						Rate = 0,
+						Enabled = false,
+					}, dust):Emit(24)
+					Debris:AddItem(dust, 3)
+					glide(siren, downCF, upCF, 1.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+				end)
+			end
+		end
+	end
+end
+
+local function endAtmosphere()
+	atmoToken += 1
+	local old = atmo
+	atmo = nil
+	if not old then
+		return
+	end
+	clearAtmosphere(old, false)
+
+	-- all clear: fireworks over the island for the survivors
+	local lo, hi = islandBounds()
+	if not lo then
+		return
+	end
+	local center = (lo + hi) / 2
+	local colors = { GOLD, CYAN, Color3.fromRGB(255, 110, 210), Color3.fromRGB(120, 255, 140), Color3.fromRGB(255, 150, 60) }
+	for i = 1, 7 do
+		task.delay(0.4 + i * 0.3, function()
+			local pos = Vector3.new(
+				center.X + rng:NextNumber(-0.3, 0.3) * (hi.X - lo.X),
+				hi.Y + rng:NextNumber(30, 60),
+				center.Z + rng:NextNumber(-0.3, 0.3) * (hi.Z - lo.Z)
+			)
+			sparkleBurst(workspace, pos, colors[((i - 1) % #colors) + 1], 70, 45)
+		end)
+	end
+end
+
+--------------------------------------------------------------------
+-- Wiring
+--------------------------------------------------------------------
+roundEvents.Event:Connect(function(kind, disasterId)
+	if kind == "Started" then
+		chestClaimed = {}
+		if setBanner then
+			setBanner(disasterId)
+		end
+		if ENABLE_DISASTER_ATMOSPHERE and hasKit then
+			local ok, err = pcall(startAtmosphere, disasterId)
+			if not ok then
+				warn("[LobbyUpgrade] Disaster atmosphere failed: " .. tostring(err))
+			end
+		end
+	elseif kind == "Ended" then
+		if setBanner then
+			setBanner(nil)
+		end
+		local ok, err = pcall(endAtmosphere)
+		if not ok then
+			warn("[LobbyUpgrade] Disaster atmosphere cleanup failed: " .. tostring(err))
+		end
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	chestClaimed[player] = nil
+end)
+
+task.spawn(function()
+	local ok, err = pcall(upgradeLobby)
+	if not ok then
+		warn("[LobbyUpgrade] Lobby upgrade failed: " .. tostring(err))
+	end
+end)
+]]></ProtectedString></Properties><Item class="ModuleScript" referent="RBX_KitLoader"><Properties><string name="Name">KitLoader</string><ProtectedString name="Source"><![CDATA[-- KitLoader  (ModuleScript, child of the LobbyUpgrade script)
+--
+-- Finds the Blender kit ("LobbyKit", imported with File > Import 3D), fixes its scale,
+-- and hands out coloured, ready-to-place copies of each prop.
+--
+-- Mesh names from Blender look like   Prop__piece__colorKey__anim
+--   colorKey -> PALETTE below (colour, material, transparency)
+--   anim     -> "spin40", "bob0.5", "spin40_bob0.5" ... played on each player's screen by KitAnimator
+
+local ServerStorage = game:GetService("ServerStorage")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local TweenService = game:GetService("TweenService")
+
+local Kit = {}
+Kit.Loaded = false
+
+-- generated by blender_lobby_kit.py (keep in sync with PAL in that file)
+local PALETTE = {
+	stone = { Color3.fromRGB(72, 78, 98), "Slate", 0 },
+	stoneLight = { Color3.fromRGB(190, 198, 220), "Concrete", 0 },
+	tile = { Color3.fromRGB(52, 92, 190), "SmoothPlastic", 0 },
+	tileLight = { Color3.fromRGB(92, 150, 240), "SmoothPlastic", 0 },
+	tileDark = { Color3.fromRGB(28, 34, 64), "SmoothPlastic", 0 },
+	white = { Color3.fromRGB(245, 246, 250), "SmoothPlastic", 0 },
+	black = { Color3.fromRGB(30, 32, 40), "SmoothPlastic", 0 },
+	gold = { Color3.fromRGB(255, 196, 58), "SmoothPlastic", 0 },
+	wood = { Color3.fromRGB(160, 104, 58), "Wood", 0 },
+	woodDark = { Color3.fromRGB(100, 64, 40), "Wood", 0 },
+	red = { Color3.fromRGB(230, 64, 64), "SmoothPlastic", 0 },
+	green = { Color3.fromRGB(72, 200, 112), "SmoothPlastic", 0 },
+	blue = { Color3.fromRGB(70, 130, 255), "SmoothPlastic", 0 },
+	purple = { Color3.fromRGB(160, 96, 255), "SmoothPlastic", 0 },
+	orange = { Color3.fromRGB(255, 150, 50), "SmoothPlastic", 0 },
+	orangeLight = { Color3.fromRGB(255, 186, 96), "SmoothPlastic", 0 },
+	yellow = { Color3.fromRGB(255, 214, 40), "SmoothPlastic", 0 },
+	grass = { Color3.fromRGB(96, 200, 84), "Grass", 0 },
+	leaf = { Color3.fromRGB(58, 168, 84), "Grass", 0 },
+	rock = { Color3.fromRGB(118, 106, 102), "Slate", 0 },
+	rockDark = { Color3.fromRGB(80, 72, 76), "Slate", 0 },
+	metal = { Color3.fromRGB(126, 134, 148), "Metal", 0 },
+	cloudDark = { Color3.fromRGB(62, 66, 90), "SmoothPlastic", 0.12 },
+	cloudStorm = { Color3.fromRGB(112, 118, 146), "SmoothPlastic", 0.2 },
+	cyanGlow = { Color3.fromRGB(60, 230, 255), "Neon", 0 },
+	pinkGlow = { Color3.fromRGB(255, 90, 200), "Neon", 0 },
+	goldGlow = { Color3.fromRGB(255, 214, 90), "Neon", 0 },
+	greenGlow = { Color3.fromRGB(90, 255, 140), "Neon", 0 },
+	orangeGlow = { Color3.fromRGB(255, 140, 40), "Neon", 0 },
+	tint = { Color3.fromRGB(255, 70, 70), "Neon", 0 },
+	x = { Color3.fromRGB(255, 0, 255), "SmoothPlastic", 1 },
+}
+
+local props = {} -- [propName] = { pieces = { {part, piece, color, anim} }, anchor = part?, front = part? }
+
+local function parse(name)
+	name = string.gsub(name, "_Node$", "") -- Studio's importer adds "_Node" to the wrapper models
+	local bits = string.split(name, "__")
+	if #bits < 3 then
+		return nil
+	end
+	local color = string.match(bits[3], "^%a+") or bits[3] -- ignore any suffix the importer added
+	return bits[1], bits[2], color, bits[4]
+end
+
+-- The kit can sit in ServerStorage, ReplicatedStorage or Workspace, under any name.
+local function findKitParts()
+	for _, where in ipairs({ ServerStorage, ReplicatedStorage, workspace }) do
+		for _, d in ipairs(where:GetDescendants()) do
+			if d:IsA("BasePart") and string.sub(d.Name, 1, 16) == "ScaleRef__cube__" then
+				-- climb to the outermost Model that holds the kit
+				-- (Workspace itself counts as a Model, so stop before it)
+				local top = d.Parent
+				while top.Parent and top.Parent ~= where and top.Parent:IsA("Model") do
+					top = top.Parent
+				end
+				local parts = {}
+				for _, p in ipairs(top:GetDescendants()) do
+					if p:IsA("BasePart") and parse(p.Name) then
+						table.insert(parts, p)
+					end
+				end
+				if top == where then
+					-- loose meshes dropped straight into a service: gather them into one model
+					top = Instance.new("Model")
+					top.Name = "LobbyKit"
+					top.Parent = ServerStorage
+					for _, p in ipairs(parts) do
+						p.Parent = top
+					end
+				end
+				return top, parts, d
+			end
+		end
+	end
+	return nil
+end
+
+function Kit.load()
+	local top, parts, ref = findKitParts()
+	if not top then
+		return false
+	end
+
+	-- freeze everything first (imported meshes are often unanchored)
+	for _, p in ipairs(parts) do
+		p.Anchored = true
+	end
+
+	-- The Blender kit is built 1 unit = 1 stud. Whatever unit the importer used, the 10-stud
+	-- reference cube tells us how to get back to that.
+	local s = 10 / math.max(ref.Size.X, ref.Size.Y, ref.Size.Z)
+	if math.abs(s - 1) > 0.02 then
+		local about = ref.Position
+		for _, p in ipairs(parts) do
+			local cf = p.CFrame
+			p.Size = p.Size * s
+			p.CFrame = CFrame.new(about + (cf.Position - about) * s) * cf.Rotation
+		end
+		print(("[LobbyUpgrade] Kit rescaled x%.3f"):format(s))
+	end
+
+	-- keep the kit out of the world while the game runs
+	if top:IsDescendantOf(workspace) then
+		top.Parent = ServerStorage
+	end
+
+	for _, p in ipairs(parts) do
+		local prop, piece, colorKey, anim = parse(p.Name)
+		local def = props[prop]
+		if not def then
+			def = { pieces = {} }
+			props[prop] = def
+		end
+		if piece == "anchor" then
+			def.anchor = p
+		elseif piece == "front" then
+			def.front = p
+		else
+			table.insert(def.pieces, { part = p, piece = piece, color = colorKey, anim = anim })
+		end
+	end
+
+	Kit.Loaded = true
+	return true
+end
+
+function Kit.has(name)
+	return props[name] ~= nil and #props[name].pieces > 0
+end
+
+local function style(part, key, opts)
+	local e = PALETTE[key] or PALETTE.white
+	local color = e[1]
+	if key == "tint" and opts.tint then
+		color = opts.tint
+	end
+	part.Color = color
+	part.Material = Enum.Material[e[2]]
+	part.Transparency = e[3]
+	part:SetAttribute("KitT", e[3])
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.Massless = true
+	part.CastShadow = opts.shadows ~= false and e[2] ~= "Neon"
+	for _, c in ipairs(part:GetChildren()) do
+		if c:IsA("SurfaceAppearance") or c:IsA("Decal") or c:IsA("Texture") then
+			c:Destroy()
+		end
+	end
+	if part:IsA("MeshPart") then
+		pcall(function()
+			part.TextureID = ""
+		end)
+	end
+end
+
+-- where the prop's own origin is inside the imported kit
+local function propPivot(def)
+	local pos
+	if def.anchor then
+		pos = def.anchor.Position
+	else
+		-- no anchor mesh survived the import: use the bottom centre of the prop
+		local lo, hi
+		for _, piece in ipairs(def.pieces) do
+			local p = piece.part
+			local a, b = p.Position - p.Size / 2, p.Position + p.Size / 2
+			lo = lo and Vector3.new(math.min(lo.X, a.X), math.min(lo.Y, a.Y), math.min(lo.Z, a.Z)) or a
+			hi = hi and Vector3.new(math.max(hi.X, b.X), math.max(hi.Y, b.Y), math.max(hi.Z, b.Z)) or b
+		end
+		pos = Vector3.new((lo.X + hi.X) / 2, lo.Y, (lo.Z + hi.Z) / 2)
+	end
+	if def.anchor and def.front then
+		local dir = def.front.Position - def.anchor.Position
+		dir = Vector3.new(dir.X, 0, dir.Z)
+		if dir.Magnitude > 0.01 then
+			return CFrame.lookAt(pos, pos + dir) -- prop "front" becomes the pivot's look direction
+		end
+	end
+	return CFrame.new(pos)
+end
+
+-- Kit.spawn("Pillar", cframe, { scale = 1, parent = folder, tint = Color3, shadows = false, name = "..",
+--                               motion = { kind = "bob" | "orbit" | "follow", ... } })
+-- The prop's front (if it has one) points along cframe.LookVector.
+function Kit.spawn(name, cf, opts)
+	local def = props[name]
+	if not def or #def.pieces == 0 then
+		return nil
+	end
+	opts = opts or {}
+	local scale = opts.scale or 1
+	local motion = opts.motion
+	local pivot = propPivot(def)
+
+	local model = Instance.new("Model")
+	model.Name = opts.name or name
+
+	local root = Instance.new("Part")
+	root.Name = "KitRoot"
+	root.Size = Vector3.new(1, 1, 1)
+	root.Transparency = 1
+	root.Anchored = true
+	root.CanCollide = false
+	root.CanTouch = false
+	root.CanQuery = false
+	root.CFrame = cf
+	root.Parent = model
+	model.PrimaryPart = root
+
+	local animated = motion ~= nil
+	for _, piece in ipairs(def.pieces) do
+		local part = piece.part:Clone()
+		local rel = pivot:ToObjectSpace(part.CFrame)
+		rel = CFrame.new(rel.Position * scale) * rel.Rotation
+		part.Name = piece.piece
+		part.Size = part.Size * scale
+		part.CFrame = cf * rel
+		style(part, piece.color, opts)
+		if piece.anim or motion then
+			part:SetAttribute("KitRel", rel)
+			if piece.anim then
+				part:SetAttribute("KitAnim", piece.anim)
+				animated = true
+			end
+		end
+		part.Parent = model
+	end
+
+	if motion then
+		model:SetAttribute("KitMotion", motion.kind)
+		model:SetAttribute("KitBase", cf)
+		model:SetAttribute("KitPhase", motion.phase or 0)
+		model:SetAttribute("KitSpeed", motion.speed or 1)
+		model:SetAttribute("KitAmp", motion.amp or 0)
+		if motion.center then
+			model:SetAttribute("KitCenter", motion.center)
+		end
+		if motion.radius then
+			model:SetAttribute("KitRadius", motion.radius)
+		end
+		if motion.target then
+			local ov = Instance.new("ObjectValue")
+			ov.Name = "KitTarget"
+			ov.Value = motion.target
+			ov.Parent = model
+		end
+	end
+	if opts.noCull then
+		model:SetAttribute("KitNoCull", true)
+	end
+	if animated then
+		CollectionService:AddTag(model, "KitModel")
+	end
+	model.Parent = opts.parent or workspace
+	return model
+end
+
+-- Fade a spawned prop in (visible = true) or out (visible = false).
+function Kit.fade(model, visible, seconds)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name ~= "KitRoot" then
+			local goal = visible and (d:GetAttribute("KitT") or 0) or 1
+			TweenService:Create(d, TweenInfo.new(seconds), { Transparency = goal }):Play()
+		end
+	end
+end
+
+function Kit.setTransparency(model, value)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") and d.Name ~= "KitRoot" then
+			d.Transparency = value
+		end
+	end
+end
+
+return Kit
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_KitAnimator"><Properties><string name="Name">KitAnimator</string><bool name="Disabled">false</bool><token name="RunContext">2</token><ProtectedString name="Source"><![CDATA[-- KitAnimator  (Script with RunContext = Client, child of the LobbyUpgrade script)
+--
+-- LobbyUpgrade moves this into ReplicatedStorage when the game starts, so it runs on every
+-- player's device. It plays all the kit animations locally (smooth, and free for the server):
+--   * pieces with a KitAnim attribute spin / bob around their prop
+--   * props with a KitMotion attribute float (bob), circle the lobby (orbit) or ride on a
+--     lobby coin (follow)
+--   * jump pads launch the local player
+
+local RunService = game:GetService("RunService")
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local SoundService = game:GetService("SoundService")
+
+local player = Players.LocalPlayer
+local entries = {} -- [model] = entry
+
+local function parseAnim(text)
+	local spin, bob = 0, 0
+	for token in string.gmatch(text, "[^_]+") do
+		local n = tonumber(string.match(token, "^spin(-?[%d%.]+)$"))
+		if n then
+			spin = n
+		end
+		n = tonumber(string.match(token, "^bob(-?[%d%.]+)$"))
+		if n then
+			bob = n
+		end
+	end
+	return math.rad(spin), bob
+end
+
+local function addPiece(entry, part)
+	if not part:IsA("BasePart") or part.Name == "KitRoot" then
+		return
+	end
+	local rel = part:GetAttribute("KitRel")
+	if typeof(rel) ~= "CFrame" then
+		return
+	end
+	local spin, bob = parseAnim(part:GetAttribute("KitAnim") or "")
+	table.insert(entry.pieces, { part = part, rel = rel, spin = spin, bob = bob })
+end
+
+local function register(model)
+	if entries[model] or not model:IsA("Model") then
+		return
+	end
+	local entry = {
+		pieces = {},
+		motion = model:GetAttribute("KitMotion"),
+		base = model:GetAttribute("KitBase"),
+		phase = model:GetAttribute("KitPhase") or 0,
+		speed = model:GetAttribute("KitSpeed") or 1,
+		amp = model:GetAttribute("KitAmp") or 0,
+		center = model:GetAttribute("KitCenter"),
+		radius = model:GetAttribute("KitRadius") or 0,
+		noCull = model:GetAttribute("KitNoCull") == true,
+	}
+	entries[model] = entry
+	for _, child in ipairs(model:GetChildren()) do
+		addPiece(entry, child)
+	end
+	entry.added = model.ChildAdded:Connect(function(child)
+		task.defer(addPiece, entry, child)
+	end)
+end
+
+local function unregister(model)
+	local entry = entries[model]
+	if entry then
+		entry.added:Disconnect()
+		entries[model] = nil
+	end
+end
+
+CollectionService:GetInstanceAddedSignal("KitModel"):Connect(register)
+CollectionService:GetInstanceRemovedSignal("KitModel"):Connect(unregister)
+for _, model in ipairs(CollectionService:GetTagged("KitModel")) do
+	register(model)
+end
+
+RunService.RenderStepped:Connect(function()
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local camPos = camera.CFrame.Position
+	local t = os.clock()
+	local parts, cframes, n = {}, {}, 0
+
+	for model, e in pairs(entries) do
+		local root = e.root
+		if not root or root.Parent ~= model then
+			root = model:FindFirstChild("KitRoot")
+			e.root = root
+		end
+		if root then
+			local rootCF = root.CFrame
+			local hidden = nil
+			if e.motion == "bob" and e.base then
+				rootCF = e.base * CFrame.new(0, math.sin(t * e.speed + e.phase) * e.amp, 0)
+			elseif e.motion == "orbit" and e.center then
+				local a = e.phase + t * math.rad(e.speed)
+				local pos = e.center + Vector3.new(math.cos(a) * e.radius, math.sin(t * 0.6 + e.phase) * e.amp, math.sin(a) * e.radius)
+				rootCF = CFrame.new(pos) * CFrame.Angles(0, -a, 0)
+			elseif e.motion == "follow" then
+				local holder = model:FindFirstChild("KitTarget")
+				local target = holder and holder.Value
+				if target and target.Parent then
+					rootCF = CFrame.new(target.Position)
+					hidden = target.Transparency > 0.9
+					target.LocalTransparencyModifier = 1 -- the kit coin replaces the plain one on screen
+				else
+					hidden = true
+				end
+			end
+
+			if e.noCull or (rootCF.Position - camPos).Magnitude < 700 then
+				local bobT = math.sin(t * 1.6 + e.phase)
+				for _, p in ipairs(e.pieces) do
+					local part = p.part
+					if part.Parent then
+						local cf = rootCF
+						if p.spin ~= 0 or p.bob ~= 0 then
+							cf = cf * CFrame.new(0, bobT * p.bob, 0) * CFrame.Angles(0, t * p.spin, 0)
+						end
+						n += 1
+						parts[n] = part
+						cframes[n] = cf * p.rel
+						if hidden ~= nil then
+							part.LocalTransparencyModifier = hidden and 1 or 0
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if n > 0 then
+		workspace:BulkMoveTo(parts, cframes, Enum.BulkMoveMode.FireCFrameChanged)
+	end
+end)
+
+--------------------------------------------------------------------
+-- Jump pads
+--------------------------------------------------------------------
+local lastBounce = 0
+local boing = Instance.new("Sound")
+boing.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+boing.Volume = 0.7
+boing.PlaybackSpeed = 0.55
+boing.Parent = SoundService
+
+local function hookPad(pad)
+	if not pad:IsA("BasePart") then
+		return
+	end
+	pad.Touched:Connect(function(hit)
+		local character = player.Character
+		if not character or not hit:IsDescendantOf(character) then
+			return
+		end
+		local hrp = character:FindFirstChild("HumanoidRootPart")
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if not hrp or not humanoid or humanoid.Health <= 0 then
+			return
+		end
+		local now = os.clock()
+		if now - lastBounce < 0.6 then
+			return
+		end
+		lastBounce = now
+		humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+		local v = hrp.AssemblyLinearVelocity
+		hrp.AssemblyLinearVelocity = Vector3.new(v.X, pad:GetAttribute("Power") or 95, v.Z)
+		SoundService:PlayLocalSound(boing)
+	end)
+end
+
+CollectionService:GetInstanceAddedSignal("KitJumpPad"):Connect(hookPad)
+for _, pad in ipairs(CollectionService:GetTagged("KitJumpPad")) do
+	hookPad(pad)
+end
+]]></ProtectedString></Properties></Item></Item></roblox>
