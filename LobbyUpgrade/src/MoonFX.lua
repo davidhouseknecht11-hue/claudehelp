@@ -24,7 +24,7 @@ local assets = ReplicatedStorage:WaitForChild("DisasterAssets")
 local soundsFolder = assets:FindFirstChild("Sounds")
 
 local MOON_SCALE = 9          -- Blender moon radius 100 -> 900 studs
-local VISUAL_SQUASH = 0.08    -- 100,000 real studs are drawn 8,000 studs away (beyond that Roblox won't draw it)
+local VISUAL_SQUASH = 0.05    -- 100,000 real studs are drawn 5,000 studs away (far enough to look huge and distant)
 local TEX_SPARK = "rbxasset://textures/particles/sparkles_main.dds"
 local TEX_SMOKE = "rbxasset://textures/particles/smoke_main.dds"
 local TEX_FIRE = "rbxasset://textures/particles/fire_main.dds"
@@ -275,10 +275,35 @@ local function approach(data)
 
 	s.cc = mk("ColorCorrectionEffect", { Name = "MoonFX" }, Lighting)
 
-	-- the moon
+	-- the moon (a plain grey ball if this LobbyKit is older than Moon Collision)
 	local moon = track(s, prop("Moon", MOON_SCALE))
+	if not moon then
+		warn("[MoonFX] No 'Moon' model in LobbyKit - import the latest LobbyKit.glb. Using a plain moon.")
+		moon = track(s, mk("Model", { Name = "Moon" }, fx))
+		local body = mk("Part", { Name = "body", Shape = Enum.PartType.Ball, Size = Vector3.one * 1800, Color = C3(168, 166, 160), Material = Enum.Material.Slate, Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false }, moon)
+		mk("Part", { Name = "heat", Shape = Enum.PartType.Ball, Size = Vector3.one * 1940, Material = Enum.Material.Neon, Transparency = 1, Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, CastShadow = false }, moon)
+		moon.PrimaryPart = body
+	end
 	local heat = moon and moon:FindFirstChild("heat")
 	local cracks = moon and moon:FindFirstChild("cracks")
+
+	-- the island's haze would hide anything thousands of studs away: thin it out while the moon comes
+	-- (put back at the end, or replaced by the airless sky after the crash)
+	local atmosphere = Lighting:FindFirstChildOfClass("Atmosphere")
+	if atmosphere then
+		local saved = { Density = atmosphere.Density, Haze = atmosphere.Haze, Glare = atmosphere.Glare }
+		tween(atmosphere, 3, { Density = math.min(saved.Density, 0.08), Haze = 0, Glare = 0 })
+		table.insert(s.conns, { Disconnect = function()
+			for k, v in pairs(saved) do
+				atmosphere[k] = v
+			end
+		end })
+	end
+	local savedFog = { Lighting.FogStart, Lighting.FogEnd }
+	Lighting.FogStart, Lighting.FogEnd = 100000, 100000
+	table.insert(s.conns, { Disconnect = function()
+		Lighting.FogStart, Lighting.FogEnd = savedFog[1], savedFog[2]
+	end })
 	if heat then
 		heat.Color = C3(255, 110, 40)
 		heat.Transparency = 1
@@ -405,7 +430,8 @@ end
 local function goAirless(s, data)
 	-- strip the atmosphere: black sky, stars, harsh light (all local, put back at the end)
 	s.lighting = {}
-	for _, k in ipairs({ "ClockTime", "Brightness", "Ambient", "OutdoorAmbient", "FogEnd", "FogStart", "ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale" }) do
+	-- (fog is saved/restored by approach(), which already turned it off)
+	for _, k in ipairs({ "ClockTime", "Brightness", "Ambient", "OutdoorAmbient", "ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale" }) do
 		s.lighting[k] = Lighting[k]
 	end
 	s.storedSky = {}
@@ -436,8 +462,6 @@ local function goAirless(s, data)
 	Lighting.Brightness = 3
 	Lighting.Ambient = C3(95, 88, 80)
 	Lighting.OutdoorAmbient = C3(170, 160, 140)
-	Lighting.FogStart = 100000
-	Lighting.FogEnd = 100000
 	Lighting.ExposureCompensation = 0.2
 	tween(s.cc, 3, { TintColor = C3(255, 238, 200), Contrast = 0.25, Saturation = -0.2 })
 

@@ -76,14 +76,21 @@ local function buildBunker(folder, pos, faceDir)
 	local cf = CFrame.lookAt(pos, pos + faceDir)
 	local bunker = { cf = cf }
 	bunker.model = Kit.spawn("Bunker", cf - Vector3.new(0, 16, 0), { parent = folder, shadows = true })
+	-- the walls are the collision; without the Blender model (old LobbyKit) they are the bunker you see
+	local plain = bunker.model == nil
+	if plain then
+		warn("[MoonCollision] No 'Bunker' model in LobbyKit - import the latest LobbyKit.glb. Using a plain concrete bunker.")
+	end
 	for _, w in ipairs(WALLS) do
 		mk("Part", {
 			Name = "BunkerWall",
 			Size = w[1],
 			CFrame = cf * CFrame.new(w[2]),
 			Anchored = true,
-			Transparency = 1,
-			CastShadow = false,
+			Transparency = plain and 0 or 1,
+			Material = Enum.Material.Concrete,
+			Color = Color3.fromRGB(150, 152, 148),
+			CastShadow = plain,
 		}, folder)
 	end
 	bunker.doorClosed = cf * CFrame.new(0, 4.5, -13.8)
@@ -92,8 +99,15 @@ local function buildBunker(folder, pos, faceDir)
 		Size = Vector3.new(10, 9, 1.2),
 		CFrame = bunker.doorClosed * DOOR_OPEN,
 		Anchored = true,
-		Transparency = 1,
+		Transparency = plain and 0 or 1,
+		Material = Enum.Material.DiamondPlate,
+		Color = Color3.fromRGB(255, 196, 20),
 	}, folder)
+	-- a sign you can see from anywhere on the island
+	local signPart = mk("Part", { Name = "BunkerSign", Size = Vector3.one, CFrame = cf * CFrame.new(0, 20, 0), Anchored = true, CanCollide = false, CanQuery = false, CanTouch = false, Transparency = 1 }, folder)
+	local bb = mk("BillboardGui", { Size = UDim2.fromOffset(200, 50), AlwaysOnTop = true, MaxDistance = 2000, LightInfluence = 0 }, signPart)
+	local l = mk("TextLabel", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Font = Enum.Font.LuckiestGuy, TextScaled = true, Text = "☢ NUCLEAR BUNKER ☢", TextColor3 = Color3.fromRGB(255, 220, 40) }, bb)
+	mk("UIStroke", { Thickness = 3 }, l)
 	if bunker.model then
 		-- door + wheel positions relative to the model's pivot (the door piece is modelled shut)
 		local pivot = bunker.model:GetPivot()
@@ -271,12 +285,14 @@ local oxygen = {} -- [Player] = seconds left
 
 local function attachTank(character)
 	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
-	if not torso or not Kit.has("OxygenTank") then
+	if not torso then
 		return
 	end
-	local tank = Kit.spawn("OxygenTank", torso.CFrame * CFrame.new(0, 0.1, 0.85), { parent = character, shadows = false, name = "MoonOxygenTank" })
-	if not tank then
-		return
+	local where = torso.CFrame * CFrame.new(0, 0.1, 0.85)
+	local tank = Kit.has("OxygenTank") and Kit.spawn("OxygenTank", where, { parent = character, shadows = false, name = "MoonOxygenTank" })
+	if not tank then -- old LobbyKit: a plain green cylinder
+		tank = mk("Model", { Name = "MoonOxygenTank" }, character)
+		mk("Part", { Shape = Enum.PartType.Cylinder, Size = Vector3.new(2.8, 1.1, 1.1), CFrame = where * CFrame.Angles(0, 0, math.rad(90)), Color = Color3.fromRGB(60, 200, 110), Material = Enum.Material.Metal, Anchored = true }, tank)
 	end
 	for _, p in ipairs(tank:GetDescendants()) do
 		if p:IsA("BasePart") then
@@ -331,7 +347,7 @@ function Moon.run()
 		local a = math.random() * math.pi * 2
 		local side = Vector3.new(math.cos(a), 0, math.sin(a))
 		local impact = Vector3.new(center.X, lo.Y, center.Z) + side * (span * 0.5 + 520)
-		local fromDir = (side * 0.55 + Vector3.new(0, 1, 0)).Unit -- moon comes down at a steep angle
+		local fromDir = (side + Vector3.new(0, 0.75, 0)).Unit -- low enough in the sky (~37°) that you see it coming
 
 		-- bunkers: on both sides across the impact line, doors facing the island centre
 		local params = RaycastParams.new()
@@ -454,7 +470,19 @@ function Moon.run()
 					if left <= 0 then
 						oxygen[player] = nil
 						player:SetAttribute("Oxygen", 0)
+						print(("[MoonCollision] %s ran out of oxygen"):format(player.Name))
 						humanoid.Health = 0
+						humanoid:ChangeState(Enum.HumanoidStateType.Dead)
+						local character = player.Character
+						task.delay(0.5, function() -- still standing? break the character apart
+							if humanoid.Parent and humanoid.Health > 0 then
+								warn("[MoonCollision] " .. player.Name .. " survived Health = 0 - breaking joints")
+								humanoid.Health = 0
+							end
+							if character and character.Parent and humanoid:GetState() ~= Enum.HumanoidStateType.Dead then
+								character:BreakJoints()
+							end
+						end)
 					else
 						oxygen[player] = left
 						if math.floor(left * 10) ~= math.floor((left + dt) * 10) then
