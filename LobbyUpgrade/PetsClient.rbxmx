@@ -1,4 +1,4 @@
-<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4"><Item class="LocalScript" referent="RBX_PetsClient"><Properties><string name="Name">PetsClient</string><bool name="Disabled">false</bool><ProtectedString name="Source"><![CDATA[--[[
+<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4"><Item class="LocalScript" referent="RBX_PetsClient"><Properties><string name="Name">PetsClient</string><ProtectedString name="Source"><![CDATA[--[[
 	PetsClient  (LocalScript)
 	Put in: StarterPlayer > StarterPlayerScripts
 

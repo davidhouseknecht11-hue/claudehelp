@@ -24,6 +24,14 @@
    end
    ```
 
+5. **Moon Collision (Transcendent disaster)** needs two of the game's own scripts replaced
+   (right-click the parent > Insert from File, after deleting the old one):
+   - `ReplicatedStorage > DisasterAssets > DisasterConfig` → `DisasterConfig.rbxmx`
+     (adds the Transcendent tier and Moon Collision at 1 in 10,000 rounds)
+   - `ServerScriptService > DisasterGameManager` → `DisasterGameManager.rbxmx`
+     (a 4-line hook so add-on disasters can run; nothing else changed)
+   To test it without waiting 10,000 rounds, pick **Moon Collision** in your Admin panel.
+
 ## Robux items
 Prices on the cards come from `ShopItems` until a real id is set. Then the real Roblox price is shown.
 - Existing items (500 / 2,500 coins, Streak Saver, Revive, Server Luck, 2x Coins, VIP): put their ids in `ProgressionConfig`.
