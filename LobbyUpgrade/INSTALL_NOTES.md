@@ -7,10 +7,11 @@
 3. Open **View > Command Bar**, paste this line, press Enter:
 
    ```lua
-   local s=game:GetService("ServerScriptService") local u=s.TuffUpdate local function put(n,p) local o=p:FindFirstChild(n) if o then o:Destroy() end u[n].Parent=p end put("LobbyUpgrade",s) put("DisasterGameManager",s) put("DisasterConfig",game.ReplicatedStorage.DisasterAssets) put("PetsClient",game.StarterPlayer.StarterPlayerScripts) s.LobbyUpgrade.Enabled=true s.DisasterGameManager.Enabled=true u:Destroy() print("TuffUpdate installed")
+   local s=game:GetService("ServerScriptService") local u=s:FindFirstChild("TuffUpdate") or workspace:FindFirstChild("TuffUpdate") local sp=game.StarterPlayer local function put(n,p) local o=p:FindFirstChild(n) if o then o:Destroy() end u[n].Parent=p end put("LobbyUpgrade",s) put("DisasterGameManager",s) put("DrowningSystem",s) put("DisasterConfig",game.ReplicatedStorage.DisasterAssets) put("PetsClient",sp.StarterPlayerScripts) put("UnderwaterFX",sp.StarterPlayerScripts) put("SwimController",sp.StarterCharacterScripts) s.LobbyUpgrade.Enabled=true s.DisasterGameManager.Enabled=true s.DrowningSystem.Enabled=true u:Destroy() print("TuffUpdate installed")
    ```
 
-   It replaces LobbyUpgrade, DisasterGameManager, DisasterConfig and PetsClient with the new ones and turns them on.
+   It replaces LobbyUpgrade, DisasterGameManager, DrowningSystem, DisasterConfig, PetsClient, UnderwaterFX and
+   SwimController with the new ones and turns them on.
    The Output window says `TuffUpdate installed` when it worked. Then press Play.
 
 ## Step by step

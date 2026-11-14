@@ -1,0 +1,70 @@
+<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4"><Item class="Script" referent="RBX_DrowningSystem"><Properties><string name="Name">DrowningSystem</string><bool name="Disabled">false</bool><token name="RunContext">0</token><ProtectedString name="Source"><![CDATA[local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- Water region configuration (must match SwimController)
+local WATER_TOP_Y = 0
+local WATER_HALF_SIZE = 4096
+
+-- Oxygen configuration
+local MAX_OXYGEN = 100
+local OXYGEN_DRAIN = 18 -- per second while head is submerged (~5.5s of air)
+local OXYGEN_REGEN = 30 -- per second once the head is above water
+local DROWN_DAMAGE = 8 -- damage per second once oxygen is depleted
+
+local function isHeadSubmerged(character)
+	local head = character:FindFirstChild("Head")
+	if not head then return false end
+	if workspace:GetAttribute("WaterDrained") then return false end -- the sea has boiled away (Moon Collision)
+	local pos = head.Position
+	return pos.Y < WATER_TOP_Y - 0.2
+		and math.abs(pos.X) < WATER_HALF_SIZE
+			and math.abs(pos.Z) < WATER_HALF_SIZE
+end
+
+local function setupCharacter(character)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then return end
+
+	local oxygen = MAX_OXYGEN
+	local damageAccum = 0
+	character:SetAttribute("Oxygen", oxygen)
+
+	local connection
+	connection = RunService.Heartbeat:Connect(function(dt)
+		if not character.Parent or humanoid.Health <= 0 then
+			if connection then connection:Disconnect() end
+			return
+		end
+
+		if isHeadSubmerged(character) then
+			oxygen = math.max(oxygen - OXYGEN_DRAIN * dt, 0)
+			if oxygen <= 0 then
+				damageAccum += DROWN_DAMAGE * dt
+				if damageAccum >= 1 then
+					humanoid:TakeDamage(damageAccum)
+					damageAccum = 0
+				end
+			end
+		else
+			oxygen = math.min(oxygen + OXYGEN_REGEN * dt, MAX_OXYGEN)
+			damageAccum = 0
+		end
+
+		local rounded = math.floor(oxygen + 0.5)
+		if rounded ~= character:GetAttribute("Oxygen") then
+			character:SetAttribute("Oxygen", rounded)
+		end
+	end)
+end
+
+local function onPlayerAdded(player)
+	player.CharacterAdded:Connect(setupCharacter)
+	if player.Character then
+		setupCharacter(player.Character)
+	end
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, player in Players:GetPlayers() do
+	onPlayerAdded(player)
+end]]></ProtectedString></Properties></Item></roblox>

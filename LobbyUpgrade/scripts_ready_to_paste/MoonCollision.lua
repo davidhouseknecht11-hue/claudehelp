@@ -238,7 +238,8 @@ local function barren(island, ground)
 			TweenService:Create(d, TweenInfo.new(1.5), { Transparency = 1 }):Play()
 		end
 	end
-	-- the sea boils away
+	-- the sea boils away (the swim / drowning / underwater scripts check this flag)
+	workspace:SetAttribute("WaterDrained", true)
 	local water = island and island:FindFirstChild("Water")
 	for _, d in ipairs(water and water:GetDescendants() or {}) do
 		if d:IsA("BasePart") then
@@ -505,6 +506,7 @@ function Moon.run()
 		end
 	end
 	restoreWorld()
+	workspace:SetAttribute("WaterDrained", nil)
 	folder:Destroy()
 	running = false
 end
