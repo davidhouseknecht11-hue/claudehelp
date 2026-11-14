@@ -27,11 +27,11 @@ sources = {
 assert "--@PALETTE@" not in sources["KitLoader"]
 
 
-def item(cls, name, source, run_context=None, children=""):
+def item(cls, name, source, run_context=None, children="", disabled=False):
     assert "]]>" not in source
     props = '<string name="Name">%s</string>' % escape(name)
     if cls == "Script":
-        props += '<bool name="Disabled">false</bool><token name="RunContext">%d</token>' % (run_context or 0)
+        props += '<bool name="Disabled">%s</bool><token name="RunContext">%d</token>' % ("true" if disabled else "false", run_context or 0)
     props += '<ProtectedString name="Source"><![CDATA[%s]]></ProtectedString>' % source
     return '<Item class="%s" referent="RBX_%s"><Properties>%s</Properties>%s</Item>' % (cls, name, props, children)
 
@@ -57,9 +57,19 @@ for name, src in sources.items():
 print("wrote LobbyUpgrade.rbxmx", len(xml), "bytes")
 
 # Patched copies of the game's own scripts (replace the originals with Insert from File)
+patched = ""
 for name, cls in (("PetsClient", "LocalScript"), ("DisasterConfig", "ModuleScript"), ("DisasterGameManager", "Script")):
     src = read("scripts_ready_to_paste", name + ".lua")
+    patched += item(cls, name, src, disabled=(cls == "Script"))  # off until moved (see INSTALL_NOTES)
     one = '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + item(cls, name, src) + "</roblox>\n"
     with open(os.path.join(HERE, name + ".rbxmx"), "w", encoding="utf8", newline="\n") as fh:
         fh.write(one)
     print("wrote", name + ".rbxmx")
+
+# Everything in one file: a "TuffUpdate" folder (insert into ServerScriptService, then run the
+# one-line command from INSTALL_NOTES.md to move each script to its place)
+lobby = item("Script", "LobbyUpgrade", sources["LobbyUpgrade"], run_context=0, children=children, disabled=True)
+folder = '<Item class="Folder" referent="RBX_TuffUpdate"><Properties><string name="Name">TuffUpdate</string></Properties>%s</Item>' % (lobby + patched)
+with open(os.path.join(HERE, "TuffUpdate_AllScripts.rbxmx"), "w", encoding="utf8", newline="\n") as fh:
+    fh.write('<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + folder + "</roblox>\n")
+print("wrote TuffUpdate_AllScripts.rbxmx")

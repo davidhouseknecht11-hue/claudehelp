@@ -64,6 +64,22 @@ if not propsFolder then
 	propsFolder.Parent = ReplicatedStorage
 end
 if hasKit then
+	-- tell the developer straight away when the imported LobbyKit is older than these scripts
+	local missing = {}
+	for _, name in ipairs(CLIENT_PROPS) do
+		if not Kit.has(name) then
+			table.insert(missing, name)
+		end
+	end
+	for _, name in ipairs({ "Tornado", "Bunker" }) do
+		if not Kit.has(name) then
+			table.insert(missing, name)
+		end
+	end
+	if #missing > 0 then
+		warn("[LobbyUpgrade] Your LobbyKit is missing " .. #missing .. " models (" .. table.concat(missing, ", ")
+			.. "). Delete the old LobbyKit and import the latest LobbyKit.glb (File > Import 3D).")
+	end
 	Kit.publish(CLIENT_PROPS, propsFolder)
 	-- New tornado funnel: TornadoDisaster already uses ServerStorage > TornadoAssets > Tornado when it exists
 	-- (pieces named layer* spin). A tornado model you put there yourself is kept.

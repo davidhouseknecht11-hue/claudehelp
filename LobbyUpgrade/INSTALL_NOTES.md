@@ -1,5 +1,20 @@
 # Installing the disaster + shop upgrade
 
+## Fast way (one file)
+1. Import the models: **File > Import 3D > `LobbyKit.glb`**, move the new LobbyKit to ServerStorage and delete the old one.
+2. Right-click **ServerScriptService > Insert from File… > `TuffUpdate_AllScripts.rbxmx`**.
+   That adds a `TuffUpdate` folder holding every script (its scripts stay switched off for now).
+3. Open **View > Command Bar**, paste this line, press Enter:
+
+   ```lua
+   local s=game:GetService("ServerScriptService") local u=s.TuffUpdate local function put(n,p) local o=p:FindFirstChild(n) if o then o:Destroy() end u[n].Parent=p end put("LobbyUpgrade",s) put("DisasterGameManager",s) put("DisasterConfig",game.ReplicatedStorage.DisasterAssets) put("PetsClient",game.StarterPlayer.StarterPlayerScripts) s.LobbyUpgrade.Enabled=true s.DisasterGameManager.Enabled=true u:Destroy() print("TuffUpdate installed")
+   ```
+
+   It replaces LobbyUpgrade, DisasterGameManager, DisasterConfig and PetsClient with the new ones and turns them on.
+   The Output window says `TuffUpdate installed` when it worked. Then press Play.
+
+## Step by step
+
 1. In Studio, delete the old `LobbyKit` model and the old `ServerScriptService > LobbyUpgrade`.
 2. **File > Import 3D > `LobbyKit.glb`** (it now also holds the shop items, effect pieces and new hazard models).
 3. Drag **`LobbyUpgrade.rbxmx`** into `ServerScriptService`. It contains LobbyUpgrade with
