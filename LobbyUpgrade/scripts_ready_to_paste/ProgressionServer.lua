@@ -1,0 +1,1249 @@
+--[[
+	ProgressionServer  (Script)
+	Put in: ServerScriptService
+
+	Needs: ReplicatedStorage.ProgressionConfig, and the patched DisasterGameManager
+	(which fires ServerStorage.RoundEvents "Started"/"Ended").
+
+	Handles: saving (DataStore), coins, survival streaks, round rewards, daily quests,
+	daily login reward, trail shop + passes + coin packs, leaderboards, spectate/respawn
+	hold, and analytics events.
+
+	Studio testing: Game Settings > Security > "Enable Studio Access to API Services",
+	otherwise saving is skipped (progress still works for the session).
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local DataStoreService = game:GetService("DataStoreService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local AnalyticsService = game:GetService("AnalyticsService")
+
+local Config = require(ReplicatedStorage:WaitForChild("ProgressionConfig"))
+local BadgeService = game:GetService("BadgeService")
+local DisasterConfig = require(ReplicatedStorage:WaitForChild("DisasterAssets"):WaitForChild("DisasterConfig"))
+local Offers = Config.Offers
+
+--------------------------------------------------------------------
+-- Remotes
+--------------------------------------------------------------------
+local remotes = Instance.new("Folder")
+remotes.Name = "ProgressionRemotes"
+remotes.Parent = ReplicatedStorage
+
+local function makeRemote(name, class)
+	local r = Instance.new(class or "RemoteEvent")
+	r.Name = name
+	r.Parent = remotes
+	return r
+end
+
+local DataUpdate = makeRemote("DataUpdate")
+local Notify = makeRemote("Notify")
+local RoundResult = makeRemote("RoundResult")
+local SpectateState = makeRemote("SpectateState")
+local RequestData = makeRemote("RequestData")
+local BuyCosmetic = makeRemote("BuyCosmetic")
+local EquipCosmetic = makeRemote("EquipCosmetic")
+local ClaimDaily = makeRemote("ClaimDaily")
+local PromptPass = makeRemote("PromptPass")
+local PromptProduct = makeRemote("PromptProduct")
+local GetLeaderboard = makeRemote("GetLeaderboard", "RemoteFunction")
+local DeathOffer = makeRemote("DeathOffer")
+local ShopOpened = makeRemote("ShopOpened")
+
+local roundEvents = ServerStorage:FindFirstChild("RoundEvents")
+if not roundEvents then
+	roundEvents = Instance.new("BindableEvent")
+	roundEvents.Name = "RoundEvents"
+	roundEvents.Parent = ServerStorage
+end
+
+--------------------------------------------------------------------
+-- Data
+--------------------------------------------------------------------
+local store = DataStoreService:GetDataStore(Config.DataStoreName)
+local streakBoard = DataStoreService:GetOrderedDataStore(Config.LeaderboardStreak)
+local survivalBoard = DataStoreService:GetOrderedDataStore(Config.LeaderboardSurvivals)
+
+local function deepCopy(t)
+	if type(t) ~= "table" then
+		return t
+	end
+	local c = {}
+	for k, v in pairs(t) do
+		c[k] = deepCopy(v)
+	end
+	return c
+end
+
+local DEFAULT = {
+	Coins = 0,
+	Streak = 0,
+	BestStreak = 0,
+	Survivals = 0,
+	Rounds = 0,
+	Owned = {},
+	Equipped = "",
+	LastDaily = 0,
+	DailyStreak = 0,
+	Seen = false,
+	DisasterSurvived = {},
+	Quests = { Day = 0, Ids = {}, Progress = {}, Done = {} },
+	Receipts = {},
+	StreakSavers = 0,
+	Revives = 0,
+	IndexClaimed = {},
+	Pets = { Owned = {}, Equipped = {} },
+}
+
+local data = {}        -- [Player] = save table
+local noSave = {}      -- [Player] = true when the load failed (never overwrite their real data)
+local passes = {}      -- [Player] = { [passKey] = bool }
+local firstJoin = {}   -- [Player] = true until the welcome flag is delivered
+
+local function track(player, eventName, value)
+	pcall(function()
+		AnalyticsService:LogCustomEvent(player, eventName, value)
+	end)
+end
+
+--------------------------------------------------------------------
+-- Onboarding funnel (each step is logged once per player, remembered in their save)
+--------------------------------------------------------------------
+local FUNNEL = { joined = 1, round_seen = 2, first_result = 3, second_round = 4, first_quest = 5, shop_opened = 6 }
+local FUNNEL_NAMES = {
+	joined = "Joined", round_seen = "Saw first round", first_result = "First survive or death",
+	second_round = "Played second round", first_quest = "Completed first quest", shop_opened = "Opened shop",
+}
+local function funnelStep(player, key)
+	local d = data[player]
+	local step = FUNNEL[key]
+	if not d or not step then
+		return
+	end
+	d.Funnel = d.Funnel or {}
+	if d.Funnel[key] then
+		return
+	end
+	d.Funnel[key] = true
+	pcall(function()
+		AnalyticsService:LogOnboardingFunnelStepEvent(player, step, FUNNEL_NAMES[key])
+	end)
+	track(player, "funnel_" .. key, step) -- also shows up as a custom event
+end
+ShopOpened.OnServerEvent:Connect(function(player)
+	funnelStep(player, "shop_opened")
+end)
+
+--------------------------------------------------------------------
+-- Mirror server-only luck state + round count to clients (for the odds line and luck chip)
+--------------------------------------------------------------------
+local function mirrorLuck()
+	ReplicatedStorage:SetAttribute("LuckRounds", ServerStorage:GetAttribute("LuckRounds") or 0)
+	ReplicatedStorage:SetAttribute("LuckMultiplier", ServerStorage:GetAttribute("LuckMultiplier") or 1)
+end
+ServerStorage:GetAttributeChangedSignal("LuckRounds"):Connect(mirrorLuck)
+ServerStorage:GetAttributeChangedSignal("LuckMultiplier"):Connect(mirrorLuck)
+mirrorLuck()
+
+--------------------------------------------------------------------
+-- Friend cache (checked when a player joins so finishRound never has to wait on the web)
+--------------------------------------------------------------------
+local friendCache = {}
+local function friendKey(a, b)
+	local x, y = a.UserId, b.UserId
+	if x > y then
+		x, y = y, x
+	end
+	return x .. ":" .. y
+end
+local function friendCached(a, b)
+	return friendCache[friendKey(a, b)] == true
+end
+local function cacheFriends(newPlayer)
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= newPlayer then
+			task.spawn(function()
+				local ok, res = pcall(function()
+					return newPlayer:IsFriendsWith(other.UserId)
+				end)
+				friendCache[friendKey(newPlayer, other)] = ok and res == true
+			end)
+		end
+	end
+end
+Players.PlayerRemoving:Connect(function(p)
+	for key in pairs(friendCache) do
+		local x, y = string.match(key, "^(%d+):(%d+)$")
+		if tonumber(x) == p.UserId or tonumber(y) == p.UserId then
+			friendCache[key] = nil
+		end
+	end
+end)
+
+local function loadData(player)
+	local key = "P_" .. player.UserId
+	local ok, result
+	for _ = 1, 3 do
+		ok, result = pcall(function()
+			return store:GetAsync(key)
+		end)
+		if ok then
+			break
+		end
+		task.wait(1.5)
+	end
+	local d
+	if ok and type(result) == "table" then
+		d = result
+	elseif ok then
+		d = {}
+	else
+		d = {}
+		noSave[player] = true
+		warn("[Progression] Could not load data for " .. player.Name .. "; session progress will not be saved.")
+	end
+	for k, v in pairs(DEFAULT) do
+		if d[k] == nil then
+			d[k] = deepCopy(v)
+		end
+	end
+	return d
+end
+
+local function saveData(player)
+	local d = data[player]
+	if not d or noSave[player] then
+		return true
+	end
+	local ok, err = pcall(function()
+		store:SetAsync("P_" .. player.UserId, d)
+	end)
+	if not ok then
+		warn("[Progression] Save failed for " .. player.Name .. ": " .. tostring(err))
+	end
+	return ok
+end
+
+local function saveBoards(player)
+	local d = data[player]
+	if not d or noSave[player] then
+		return
+	end
+	pcall(function()
+		if d.BestStreak > 0 then
+			streakBoard:SetAsync(tostring(player.UserId), d.BestStreak)
+		end
+		if d.Survivals > 0 then
+			survivalBoard:SetAsync(tostring(player.UserId), d.Survivals)
+		end
+	end)
+end
+
+--------------------------------------------------------------------
+-- Passes / cosmetics / daily / quests helpers
+--------------------------------------------------------------------
+local function checkPasses(player)
+	local owned = {}
+	for _, def in ipairs(Config.Passes) do
+		owned[def.Key] = false
+		if def.Id > 0 then
+			local ok, has = pcall(function()
+				return MarketplaceService:UserOwnsGamePassAsync(player.UserId, def.Id)
+			end)
+			owned[def.Key] = ok and has == true
+		end
+	end
+	passes[player] = owned
+end
+
+local cosmeticById = {}
+for _, c in ipairs(Config.Cosmetics) do
+	cosmeticById[c.Id] = c
+end
+
+local function owns(player, def)
+	if data[player].Owned[def.Id] then
+		return true
+	end
+	if def.RequiresPass and passes[player] and passes[player][def.RequiresPass] then
+		return true
+	end
+	return false
+end
+
+local function dailyInfo(d)
+	local now = os.time()
+	local elapsed = now - d.LastDaily
+	local ready = elapsed >= Config.Daily.CooldownHours * 3600
+	local nextStreak = d.DailyStreak
+	if ready then
+		if elapsed > Config.Daily.ResetHours * 3600 then
+			nextStreak = 1
+		else
+			nextStreak = d.DailyStreak + 1
+		end
+	end
+	local rewards = Config.Daily.Rewards
+	local idx = ((math.max(nextStreak, 1) - 1) % #rewards) + 1
+	local remaining = ready and 0 or math.max(0, Config.Daily.CooldownHours * 3600 - elapsed)
+	return ready, idx, rewards[idx], remaining
+end
+
+local questById = {}
+for _, q in ipairs(Config.Quests) do
+	questById[q.Id] = q
+end
+
+local function ensureQuests(d)
+	local day = math.floor(os.time() / 86400)
+	if d.Quests.Day ~= day or not d.Quests.Ids then
+		local rng = Random.new(day)
+		local pool = table.clone(Config.Quests)
+		local ids = {}
+		for _ = 1, math.min(Config.DailyQuestCount, #pool) do
+			local i = rng:NextInteger(1, #pool)
+			table.insert(ids, pool[i].Id)
+			table.remove(pool, i)
+		end
+		d.Quests = { Day = day, Ids = ids, Progress = {}, Done = {} }
+	end
+end
+
+local function snapshot(player)
+	local d = data[player]
+	if not d then
+		return nil
+	end
+	ensureQuests(d)
+	local ready, idx, reward, remaining = dailyInfo(d)
+	local quests = {}
+	for _, id in ipairs(d.Quests.Ids) do
+		local q = questById[id]
+		if q then
+			table.insert(quests, {
+				Id = id,
+				Desc = q.Desc,
+				Goal = q.Goal,
+				Reward = q.Reward,
+				Progress = d.Quests.Progress[id] or 0,
+				Done = d.Quests.Done[id] == true,
+			})
+		end
+	end
+	local owned = {}
+	for _, c in ipairs(Config.Cosmetics) do
+		owned[c.Id] = owns(player, c)
+	end
+	return {
+		Coins = d.Coins,
+		Streak = d.Streak,
+		BestStreak = d.BestStreak,
+		Survivals = d.Survivals,
+		Owned = owned,
+		Equipped = d.Equipped,
+		Passes = passes[player] or {},
+		Quests = quests,
+		DailyReady = ready,
+		DailyDay = idx,
+		DailyReward = reward,
+		DailyRemaining = remaining,
+		DailyStreak = d.DailyStreak,
+		Index = d.DisasterSurvived,
+		IndexClaimed = d.IndexClaimed,
+		Inventory = { StreakSavers = d.StreakSavers, Revives = d.Revives },
+		Luck = {
+			Rounds = ServerStorage:GetAttribute("LuckRounds") or 0,
+			Buyer = ServerStorage:GetAttribute("LuckBuyer"),
+		},
+		DisastersSurvived = (function()
+			local n = 0
+			for _ in pairs(d.DisasterSurvived) do
+				n += 1
+			end
+			return n
+		end)(),
+	}
+end
+
+local function sync(player)
+	local d = data[player]
+	if not d then
+		return
+	end
+	player:SetAttribute("Rounds", d.Rounds)
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		if ls:FindFirstChild("Coins") then
+			ls.Coins.Value = d.Coins
+		end
+		if ls:FindFirstChild("Streak") then
+			ls.Streak.Value = d.Streak
+		end
+	end
+	DataUpdate:FireClient(player, snapshot(player))
+end
+
+local function addCoins(player, amount)
+	local d = data[player]
+	if not d then
+		return 0
+	end
+	if passes[player] and passes[player].DoubleCoins then
+		amount *= 2
+	end
+	amount = math.floor(amount)
+	d.Coins += amount
+	sync(player)
+	return amount
+end
+
+--------------------------------------------------------------------
+-- Pet system hooks: PetService talks to this instead of touching `data`.
+--------------------------------------------------------------------
+local ProgressionAPI = Instance.new("BindableFunction")
+ProgressionAPI.Name = "ProgressionAPI"
+ProgressionAPI.OnInvoke = function(action, player, amount)
+	local d = data[player]
+	if not d then
+		return nil -- save not loaded yet
+	end
+	if action == "GetPets" then
+		return deepCopy(d.Pets)
+	elseif action == "SetPets" then
+		if type(amount) == "table" then
+			d.Pets = deepCopy(amount)
+			return true
+		end
+		return false
+	elseif action == "Spend" then
+		if type(amount) ~= "number" or amount <= 0 or d.Coins < amount then
+			return false
+		end
+		d.Coins -= amount
+		sync(player)
+		return true
+	elseif action == "AddCoinsRaw" then -- not doubled by the DoubleCoins pass (used for duplicate-pet refunds)
+		if type(amount) == "number" and amount > 0 then
+			d.Coins += math.floor(amount)
+			sync(player)
+			return true
+		end
+		return false
+	end
+	return nil
+end
+ProgressionAPI.Parent = ServerStorage
+
+-- Lobby coins (LobbyService fires ServerStorage.AwardCoins)
+local awardEvent = ServerStorage:FindFirstChild("AwardCoins")
+if not awardEvent then
+	awardEvent = Instance.new("BindableEvent")
+	awardEvent.Name = "AwardCoins"
+	awardEvent.Parent = ServerStorage
+end
+awardEvent.Event:Connect(function(player, amount, reason)
+	if typeof(player) == "Instance" and player.Parent == Players and data[player] and type(amount) == "number" then
+		local given = addCoins(player, amount)
+		track(player, tostring(reason or "bonus_coins"), given)
+	end
+end)
+
+local function progressQuests(player, kind, disasterId)
+	local d = data[player]
+	if not d then
+		return
+	end
+	ensureQuests(d)
+	local Q = d.Quests
+	for _, id in ipairs(Q.Ids) do
+		local def = questById[id]
+		if def and not Q.Done[id] then
+			local p = Q.Progress[id] or 0
+			local newP = p
+			if def.Type == "Play" and kind == "Play" then
+				newP += 1
+			elseif def.Type == "Survive" and kind == "Survive" then
+				newP += 1
+			elseif def.Type == "Streak" and kind == "Streak" then
+				newP = math.max(p, d.Streak)
+			elseif def.Type == "SurviveDisaster" and kind == "Survive" and disasterId == def.Disaster then
+				newP += 1
+			end
+			if newP ~= p then
+				Q.Progress[id] = math.min(newP, def.Goal)
+				if newP >= def.Goal then
+					Q.Done[id] = true
+					local given = addCoins(player, def.Reward)
+					Notify:FireClient(player, ("Quest complete: %s  +%d coins"):format(def.Desc, given), "quest")
+					track(player, "quest_completed", given)
+					funnelStep(player, "first_quest")
+				end
+			end
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- Trail cosmetic
+--------------------------------------------------------------------
+local function applyTrail(player)
+	local char = player.Character
+	local d = data[player]
+	if not char or not d then
+		return
+	end
+	local hrp = char:WaitForChild("HumanoidRootPart", 10)
+	if not hrp then
+		return
+	end
+	for _, n in ipairs({ "CosmeticTrail", "TrailA0", "TrailA1" }) do
+		local old = hrp:FindFirstChild(n)
+		if old then
+			old:Destroy()
+		end
+	end
+	local def = cosmeticById[d.Equipped]
+	if not def or not owns(player, def) then
+		return
+	end
+	local a0 = Instance.new("Attachment")
+	a0.Name = "TrailA0"
+	a0.Position = Vector3.new(0, 1, 0)
+	a0.Parent = hrp
+	local a1 = Instance.new("Attachment")
+	a1.Name = "TrailA1"
+	a1.Position = Vector3.new(0, -1, 0)
+	a1.Parent = hrp
+	local trail = Instance.new("Trail")
+	trail.Name = "CosmeticTrail"
+	trail.Attachment0 = a0
+	trail.Attachment1 = a1
+	trail.Color = ColorSequence.new(def.Color1, def.Color2)
+	trail.Transparency = NumberSequence.new(0, 1)
+	trail.Lifetime = 0.7
+	trail.LightEmission = 1
+	trail.Parent = hrp
+end
+
+--------------------------------------------------------------------
+-- Round tracking
+--------------------------------------------------------------------
+local roundActive = false
+local currentDisaster = nil
+local roller = nil
+local roundT0 = 0
+local reviveUsed = {}     -- [Player] = revives used this round
+local lostStreak = {}     -- [Player] = { n = streak, t = os.clock() } while a Streak Saver purchase can still restore it
+local reviveShield = {}   -- [Player] = true -> give a short forcefield on next spawn
+local participants = {}     -- [Player] = { t0, died, diedAt }
+local pendingRespawn = {}   -- [Player] = true
+
+if Config.HoldRespawnUntilRoundEnd then
+	Players.RespawnTime = 1000 -- we respawn players ourselves
+end
+
+local function respawn(player)
+	pendingRespawn[player] = nil
+	if player.Parent == Players then
+		SpectateState:FireClient(player, false)
+		player:LoadCharacter()
+	end
+end
+
+--------------------------------------------------------------------
+-- Disaster Index rewards
+--------------------------------------------------------------------
+local function awardBadge(player, key)
+	local id = Config.Badges and Config.Badges[key]
+	if id and id > 0 then
+		task.spawn(function()
+			pcall(function()
+				BadgeService:AwardBadge(player.UserId, id)
+			end)
+		end)
+	end
+end
+
+local function grantIndexReward(player, claimKey, coins, cosmeticId, badgeKey, message)
+	local d = data[player]
+	if not d or d.IndexClaimed[claimKey] then
+		return
+	end
+	d.IndexClaimed[claimKey] = true
+	local given = coins > 0 and addCoins(player, coins) or 0
+	if cosmeticId then
+		d.Owned[cosmeticId] = true
+	end
+	if badgeKey then
+		awardBadge(player, badgeKey)
+	end
+	Notify:FireClient(player, message:format(given), "good")
+	track(player, "index_reward", given)
+	sync(player)
+end
+
+-- Call after a survival. isNew = first time surviving this disaster. Passing any id with isNew=true
+-- also re-checks milestones (used once at join so existing players are credited).
+local function checkIndex(player, disasterId, isNew)
+	local d = data[player]
+	if not d or not disasterId or not isNew then
+		return
+	end
+	local I = Config.Index
+	local def = DisasterConfig.GetDisasterById(disasterId)
+	if def and def.Rarity == "Mythic" then
+		grantIndexReward(player, "mythic_" .. disasterId, I.MythicFirstSurvival, nil, nil,
+			"🌟 First time surviving " .. def.Name .. "!  +%d coins")
+	end
+	local baseDone, mythicDone, mythicTotal = 0, 0, 0
+	for _, dd in ipairs(DisasterConfig.Disasters) do
+		local got = d.DisasterSurvived[dd.Id] == true
+		if dd.Rarity == "Mythic" then
+			mythicTotal += 1
+			if got then
+				mythicDone += 1
+			end
+		elseif got then
+			baseDone += 1
+		end
+	end
+	-- Migration: the old 9-disaster milestone paid the "complete" reward early
+	if d.IndexClaimed["base9"] then
+		d.IndexClaimed["base10"] = true
+	end
+	for _, m in ipairs(I.Milestones) do
+		if baseDone >= m.Need then
+			grantIndexReward(player, "base" .. m.Need, m.Coins, m.Cosmetic, m.Badge,
+				("📖 Disaster Index: %d disasters survived!  +%%d coins"):format(m.Need))
+		end
+	end
+	if mythicTotal > 0 and mythicDone >= mythicTotal then
+		grantIndexReward(player, "mythicAll", I.MythicAll.Coins, I.MythicAll.Cosmetic, I.MythicAll.Badge,
+			"👑 You survived every Mythic disaster!  +%d coins")
+	end
+end
+
+--------------------------------------------------------------------
+-- Revive / Streak Saver
+--------------------------------------------------------------------
+local reviveEvent = ServerStorage:FindFirstChild("RevivePlayer")
+if not reviveEvent then
+	reviveEvent = Instance.new("BindableEvent")
+	reviveEvent.Name = "RevivePlayer"
+	reviveEvent.Parent = ServerStorage
+end
+
+local function roundTimeLeft()
+	if not roundActive then
+		return 0
+	end
+	return math.max(0, DisasterConfig.DisasterDuration - (os.clock() - roundT0))
+end
+
+local function canRevive(player)
+	local info = participants[player]
+	return roundActive
+		and info ~= nil
+		and info.died == true
+		and (reviveUsed[player] or 0) < Offers.ReviveMaxPerRound
+		and roundTimeLeft() >= Offers.ReviveMinTimeLeft
+end
+
+local function revivePlayer(player, restoreStreak)
+	local info = participants[player]
+	local d = data[player]
+	if not info or not d or not canRevive(player) then
+		return false
+	end
+	info.died = false
+	info.diedAt = nil
+	if restoreStreak and restoreStreak > d.Streak then
+		d.Streak = restoreStreak
+	end
+	reviveUsed[player] = (reviveUsed[player] or 0) + 1
+	reviveShield[player] = true
+	pendingRespawn[player] = nil
+	lostStreak[player] = nil
+	reviveEvent:Fire(player) -- LobbyService clears lobby state and brings them back to the island
+	sync(player)
+	Notify:FireClient(player, "💚 Revived! Survive the rest of the round", "good")
+	track(player, "revived", 1)
+	return true
+end
+
+local function onDied(player)
+	local info = participants[player]
+	if roundActive and info and not info.died then
+		info.died = true
+		info.diedAt = os.clock()
+		local d = data[player]
+		if d then
+			local lost = d.Streak
+			local minStreak = Offers.StreakSaveMinStreak
+			if d.Revives > 0 and canRevive(player) then
+				-- A stored Revive is used automatically (short delay lets LobbyService process the death first)
+				d.Revives -= 1
+				Notify:FireClient(player, "💚 Using a stored Revive...", "good")
+				task.delay(0.75, function()
+					if not revivePlayer(player, lost) then
+						d.Revives += 1 -- couldn't apply it (round ended); give it back
+						d.Streak = 0
+					end
+				end)
+			elseif lost >= minStreak and d.StreakSavers > 0 then
+				d.StreakSavers -= 1
+				Notify:FireClient(player, ("🛡️ Streak Saver used! Your %d streak is safe"):format(lost), "good")
+				track(player, "streak_saver_used", lost)
+			else
+				d.Streak = 0
+				if lost >= minStreak then
+					lostStreak[player] = { n = lost, t = os.clock() }
+				end
+				-- Purchase offers: never in a new player's first few rounds
+				if d.Rounds >= Offers.MinRoundsBeforeOffers then
+					local saveable = lost >= minStreak
+					local reviveable = canRevive(player)
+					if saveable or reviveable then
+						DeathOffer:FireClient(player, {
+							Streak = saveable and lost or 0,
+							CanRevive = reviveable,
+							Window = Offers.OfferWindowSeconds,
+						})
+						track(player, "death_offer_shown", lost)
+					end
+				end
+			end
+			sync(player)
+		end
+		track(player, "player_died", math.floor(info.diedAt - info.t0))
+	end
+	if Config.HoldRespawnUntilRoundEnd then
+		pendingRespawn[player] = true
+		if roundActive then
+			SpectateState:FireClient(player, true)
+		else
+			task.delay(3, function()
+				if pendingRespawn[player] then
+					respawn(player)
+				end
+			end)
+		end
+	end
+end
+
+local function watchCharacter(player, char)
+	local hum = char:WaitForChild("Humanoid", 10)
+	if not hum then
+		return
+	end
+	hum.Died:Once(function()
+		onDied(player)
+	end)
+	applyTrail(player)
+	if reviveShield[player] then
+		reviveShield[player] = nil
+		local ff = Instance.new("ForceField")
+		ff.Parent = char
+		task.delay(Offers.ReviveShieldSeconds, function()
+			if ff.Parent then
+				ff:Destroy()
+			end
+		end)
+	end
+end
+
+local function startRound(disasterId, chosen)
+	roundActive = true
+	currentDisaster = disasterId
+	roller = chosen
+	roundT0 = os.clock()
+	reviveUsed = {}
+	lostStreak = {}
+	participants = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		local hum = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+		-- AFK players sit out the round in the lobby: they are not
+		-- participants, so they never get survival credit
+		if hum and hum.Health > 0 and data[p] and p:GetAttribute("AFK") ~= true then
+			participants[p] = { t0 = os.clock(), died = false }
+			data[p].Rounds += 1
+			progressQuests(p, "Play")
+			funnelStep(p, "round_seen")
+			if data[p].Rounds >= 2 then
+				funnelStep(p, "second_round")
+			end
+		end
+	end
+end
+
+local function finishRound()
+	if not roundActive then
+		return
+	end
+	roundActive = false
+	local R = Config.Rewards
+	local disaster = currentDisaster
+	local disasterDef = disaster and DisasterConfig.GetDisasterById(disaster)
+	local tier = DisasterConfig.Rarities[(disasterDef and disasterDef.Rarity) or "Common"] or DisasterConfig.Rarities.Common
+	local E = DisasterConfig.Event
+	local eventBonus = (disaster and disaster == DisasterConfig.GetFeaturedId()) and E.CoinBonus or 0
+	local total, survivors = 0, 0
+	for p, info in pairs(participants) do
+		total += 1
+		if not info.died and p.Parent then
+			survivors += 1
+		end
+	end
+	local function friendBonusFor(p)
+		local n = 0
+		for other, oinfo in pairs(participants) do
+			if other ~= p and not oinfo.died and other.Parent and friendCached(p, other) then
+				n += 1
+			end
+		end
+		return math.min(n * Config.Friends.BonusPerFriend, Config.Friends.MaxBonus)
+	end
+	for p, info in pairs(participants) do
+		local d = data[p]
+		if d and p.Parent then
+			local survived = not info.died
+			local coins
+			local firstEver = false
+			local newDisaster = false
+			local friendBonus = 0
+			if survived then
+				d.Streak += 1
+				d.BestStreak = math.max(d.BestStreak, d.Streak)
+				d.Survivals += 1
+				firstEver = d.Survivals == 1
+				if disaster then
+					newDisaster = not d.DisasterSurvived[disaster]
+					d.DisasterSurvived[disaster] = true
+				end
+				coins = math.floor((R.SurviveBase + math.min(d.Streak, R.StreakBonusCap) * R.StreakBonusPerLevel) * tier.Multiplier)
+				if firstEver then
+					coins += R.FirstSurvivalBonus
+				end
+				friendBonus = friendBonusFor(p)
+				coins = math.floor(coins * (1 + friendBonus + eventBonus))
+			else
+				local seconds = (info.diedAt or os.clock()) - info.t0
+				coins = math.min(R.SurviveBase - 1, math.floor(R.ParticipationBase + seconds * R.ParticipationPerSecond))
+			end
+			local isRoller = (p == roller)
+			if isRoller then
+				coins += R.RollerBonus + (tier.RollerBonus or 0)
+			end
+			local given = addCoins(p, coins)
+			if survived then
+				progressQuests(p, "Survive", disaster)
+				progressQuests(p, "Streak")
+				checkIndex(p, disaster, newDisaster)
+				track(p, "round_survived", d.Streak)
+				if firstEver then
+					track(p, "first_survival", 1)
+				end
+			end
+			RoundResult:FireClient(p, {
+				Survived = survived,
+				Coins = given,
+				Streak = d.Streak,
+				BestStreak = d.BestStreak,
+				Survivors = survivors,
+				Total = total,
+				Disaster = disaster,
+				First = firstEver,
+				Roller = isRoller,
+				Rarity = tier.Name,
+				Multiplier = tier.Multiplier,
+				FriendBonus = friendBonus,
+				EventBonus = survived and eventBonus or 0,
+			})
+			funnelStep(p, "first_result")
+		end
+	end
+	participants = {}
+	task.delay(2, function()
+		for p in pairs(pendingRespawn) do
+			respawn(p)
+		end
+	end)
+end
+
+roundEvents.Event:Connect(function(kind, disasterId, extra)
+	if kind == "Started" then
+		startRound(disasterId, extra)
+	elseif kind == "Ended" then
+		finishRound()
+	end
+end)
+
+--------------------------------------------------------------------
+-- Shop / daily / leaderboard remotes
+--------------------------------------------------------------------
+BuyCosmetic.OnServerEvent:Connect(function(player, id)
+	local d = data[player]
+	if not d or type(id) ~= "string" then
+		return
+	end
+	local def = cosmeticById[id]
+	if not def or owns(player, def) then
+		return
+	end
+	if def.RequiresPass then
+		Notify:FireClient(player, "Requires the " .. def.RequiresPass .. " pass", "error")
+		return
+	end
+	if def.IndexReward then
+		Notify:FireClient(player, "Unlock this by completing the Disaster Index", "error")
+		return
+	end
+	if d.Coins < def.Price then
+		Notify:FireClient(player, "Not enough coins", "error")
+		return
+	end
+	d.Coins -= def.Price
+	d.Owned[id] = true
+	d.Equipped = id
+	sync(player)
+	applyTrail(player)
+	Notify:FireClient(player, "Unlocked " .. def.Name .. "!", "good")
+	track(player, "cosmetic_bought", def.Price)
+end)
+
+EquipCosmetic.OnServerEvent:Connect(function(player, id)
+	local d = data[player]
+	if not d or type(id) ~= "string" then
+		return
+	end
+	if id ~= "" then
+		local def = cosmeticById[id]
+		if not def or not owns(player, def) then
+			return
+		end
+	end
+	d.Equipped = id
+	sync(player)
+	applyTrail(player)
+end)
+
+ClaimDaily.OnServerEvent:Connect(function(player)
+	local d = data[player]
+	if not d then
+		return
+	end
+	local ready, _, reward = dailyInfo(d)
+	if not ready then
+		return
+	end
+	local now = os.time()
+	if now - d.LastDaily > Config.Daily.ResetHours * 3600 then
+		d.DailyStreak = 1
+	else
+		d.DailyStreak += 1
+	end
+	d.LastDaily = now
+	local given = addCoins(player, reward)
+	Notify:FireClient(player, ("Daily reward: +%d coins (day %d)"):format(given, d.DailyStreak), "good")
+	track(player, "daily_claimed", d.DailyStreak)
+end)
+
+PromptPass.OnServerEvent:Connect(function(player, key)
+	for _, def in ipairs(Config.Passes) do
+		if def.Key == key then
+			if def.Id > 0 then
+				MarketplaceService:PromptGamePassPurchase(player, def.Id)
+			else
+				Notify:FireClient(player, "This pass isn't set up yet", "error")
+			end
+			return
+		end
+	end
+end)
+
+PromptProduct.OnServerEvent:Connect(function(player, key)
+	for _, def in ipairs(Config.Products) do
+		if def.Key == key then
+			if def.Id > 0 then
+				MarketplaceService:PromptProductPurchase(player, def.Id)
+			else
+				Notify:FireClient(player, "This item isn't set up yet", "error")
+			end
+			return
+		end
+	end
+end)
+
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, wasPurchased)
+	if not wasPurchased or not passes[player] then
+		return
+	end
+	for _, def in ipairs(Config.Passes) do
+		if def.Id == passId then
+			passes[player][def.Key] = true
+			Notify:FireClient(player, "Thanks! " .. def.Name .. " unlocked", "good")
+			track(player, "pass_bought", 1)
+			sync(player)
+			applyTrail(player)
+		end
+	end
+end)
+
+MarketplaceService.ProcessReceipt = function(receipt)
+	local player = Players:GetPlayerByUserId(receipt.PlayerId)
+	local d = player and data[player]
+	if not player or not d then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	-- Their data failed to load, so nothing will be saved. Roblox retries the receipt
+	-- later instead of the purchase being granted and then lost.
+	if noSave[player] then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	local pid = tostring(receipt.PurchaseId)
+	if d.Receipts[pid] then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	local product
+	for _, def in ipairs(Config.Products) do
+		if def.Id == receipt.ProductId then
+			product = def
+		end
+	end
+	if not product then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local kind = product.Kind or "Coins"
+	local before = { Coins = d.Coins, Streak = d.Streak, StreakSavers = d.StreakSavers, Revives = d.Revives }
+	local after -- side effects that run only once the purchase is safely saved
+	local message = "Thanks for your purchase!"
+
+	if kind == "Coins" then
+		d.Coins += product.Coins
+		message = ("+%d coins!"):format(product.Coins)
+	elseif kind == "StreakSaver" then
+		local w = lostStreak[player]
+		if w and os.clock() - w.t <= Offers.OfferWindowSeconds + 5 and d.Streak < w.n then
+			d.Streak = w.n
+			lostStreak[player] = nil
+			message = ("🛡️ Streak restored to %d!"):format(w.n)
+		else
+			d.StreakSavers += 1
+			message = "🛡️ Streak Saver stored - it protects your next streak"
+		end
+	elseif kind == "Revive" then
+		if canRevive(player) then
+			local restore = lostStreak[player] and lostStreak[player].n
+			after = function()
+				if not revivePlayer(player, restore) then
+					d.Revives += 1 -- too late to use now; keep it for next time
+					sync(player)
+				end
+			end
+			message = "💚 Reviving you..."
+		else
+			d.Revives += 1
+			message = "💚 Revive stored - it will be used the next time you're eliminated"
+		end
+	elseif kind == "ServerLuck" then
+		local total = math.min((ServerStorage:GetAttribute("LuckRounds") or 0) + (product.Rounds or 3), Offers.MaxLuckRounds)
+		local mult = product.Multiplier or 3
+		after = function()
+			ServerStorage:SetAttribute("LuckRounds", total)
+			ServerStorage:SetAttribute("LuckMultiplier", mult)
+			ServerStorage:SetAttribute("LuckBuyer", player.DisplayName)
+			for _, p in ipairs(Players:GetPlayers()) do
+				Notify:FireClient(p, ("🍀 %s boosted server luck! Rare disasters %dx likelier for %d rounds"):format(player.DisplayName, mult, total), "good")
+				sync(p)
+			end
+		end
+		message = "🍀 Server luck boosted - everyone benefits!"
+	else
+		-- Add-on products (LobbyUpgrade: disaster summons, Robux eggs): a BindableFunction named after
+		-- the Kind in ServerStorage > ExtraProductHandlers. It runs only once the receipt is saved.
+		local handlers = ServerStorage:FindFirstChild("ExtraProductHandlers")
+		local handler = handlers and handlers:FindFirstChild(kind)
+		if not (handler and handler:IsA("BindableFunction")) then
+			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+		after = function()
+			local ok, msg = pcall(handler.Invoke, handler, player, product)
+			if not ok then
+				warn("[ProgressionServer] " .. kind .. " handler failed: " .. tostring(msg))
+			elseif type(msg) == "string" then
+				Notify:FireClient(player, msg, "good")
+			end
+		end
+	end
+
+	d.Receipts[pid] = true
+	if not saveData(player) then
+		d.Receipts[pid] = nil
+		d.Coins, d.Streak, d.StreakSavers, d.Revives = before.Coins, before.Streak, before.StreakSavers, before.Revives
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	if after then
+		after()
+	end
+	sync(player)
+	Notify:FireClient(player, message, "good")
+	track(player, "product_bought", product.Coins or 1)
+	track(player, "product_" .. tostring(product.Key), 1)
+	return Enum.ProductPurchaseDecision.PurchaseGranted
+end
+
+local boardCache = {}
+local nameCache = {}
+GetLeaderboard.OnServerInvoke = function(_, kind)
+	if kind ~= "Streak" and kind ~= "Survivals" then
+		return {}
+	end
+	local cache = boardCache[kind]
+	if cache and os.clock() - cache.t < 60 then
+		return cache.rows
+	end
+	local board = kind == "Streak" and streakBoard or survivalBoard
+	local rows = {}
+	local ok, pages = pcall(function()
+		return board:GetSortedAsync(false, 10)
+	end)
+	if ok then
+		local ok2, page = pcall(function()
+			return pages:GetCurrentPage()
+		end)
+		if ok2 then
+			for _, entry in ipairs(page) do
+				local uid = tonumber(entry.key)
+				local name = uid and nameCache[uid]
+				if uid and not name then
+					local okN, n = pcall(function()
+						return Players:GetNameFromUserIdAsync(uid)
+					end)
+					name = okN and n or "Player"
+					nameCache[uid] = name
+				end
+				table.insert(rows, { Name = name or "Player", Value = entry.value })
+			end
+		end
+	end
+	boardCache[kind] = { t = os.clock(), rows = rows }
+	return rows
+end
+
+--------------------------------------------------------------------
+-- Player lifecycle
+--------------------------------------------------------------------
+local function setupLeaderstats(player)
+	local ls = Instance.new("Folder")
+	ls.Name = "leaderstats"
+	local coins = Instance.new("IntValue")
+	coins.Name = "Coins"
+	coins.Parent = ls
+	local streak = Instance.new("IntValue")
+	streak.Name = "Streak"
+	streak.Parent = ls
+	ls.Parent = player
+end
+
+local function onPlayerAdded(player)
+	setupLeaderstats(player)
+	local d = loadData(player)
+	if player.Parent ~= Players then
+		return
+	end
+	data[player] = d
+	if not d.Seen then
+		firstJoin[player] = true
+		d.Seen = true
+	end
+	ensureQuests(d)
+	checkPasses(player)
+	-- Credit Disaster Index milestones that existing players already earned before this update
+	task.delay(8, function()
+		if data[player] then
+			checkIndex(player, "_catchup", true)
+		end
+	end)
+	player.CharacterAdded:Connect(function(char)
+		watchCharacter(player, char)
+	end)
+	if player.Character then
+		task.spawn(watchCharacter, player, player.Character)
+	end
+	-- Toggling AFK on mid-round removes them from the round: no
+	-- survival credit for sitting out in the lobby
+	player:GetAttributeChangedSignal("AFK"):Connect(function()
+		if player:GetAttribute("AFK") == true and participants[player] then
+			participants[player] = nil
+		end
+	end)
+	sync(player)
+	track(player, "session_start", d.Rounds)
+	funnelStep(player, "joined")
+	task.spawn(cacheFriends, player)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, p in ipairs(Players:GetPlayers()) do
+	task.spawn(onPlayerAdded, p)
+end
+
+RequestData.OnServerEvent:Connect(function(player)
+	local waited = 0
+	while not data[player] and player.Parent == Players and waited < 30 do
+		task.wait(0.25)
+		waited += 0.25
+	end
+	local snap = snapshot(player)
+	if snap then
+		snap.FirstJoin = firstJoin[player] == true
+		firstJoin[player] = nil
+		DataUpdate:FireClient(player, snap)
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	saveData(player)
+	saveBoards(player)
+	data[player] = nil
+	noSave[player] = nil
+	passes[player] = nil
+	participants[player] = nil
+	pendingRespawn[player] = nil
+	firstJoin[player] = nil
+	lostStreak[player] = nil
+	reviveUsed[player] = nil
+	reviveShield[player] = nil
+end)
+
+-- Autosave every 2 minutes, spaced out to stay inside DataStore limits
+task.spawn(function()
+	while true do
+		task.wait(120)
+		for _, p in ipairs(Players:GetPlayers()) do
+			saveData(p)
+			saveBoards(p)
+			task.wait(0.5)
+		end
+	end
+end)
+
+game:BindToClose(function()
+	local pending = 0
+	for _, p in ipairs(Players:GetPlayers()) do
+		pending += 1
+		task.spawn(function()
+			saveData(p)
+			saveBoards(p)
+			pending -= 1
+		end)
+	end
+	local startedAt = os.clock()
+	while pending > 0 and os.clock() - startedAt < 25 do
+		task.wait(0.1)
+	end
+end)

@@ -35,6 +35,10 @@ local PromptPass = remotes:WaitForChild("PromptPass")
 local PromptProduct = remotes:WaitForChild("PromptProduct")
 local ShopOpened = remotes:WaitForChild("ShopOpened")
 local Notify = remotes:WaitForChild("Notify")
+local SummonRemote = ReplicatedStorage:WaitForChild("SummonRemote", 30)
+local DisasterConfig = require(ReplicatedStorage:WaitForChild("DisasterAssets"):WaitForChild("DisasterConfig"))
+local SoundService = game:GetService("SoundService")
+local HOVER_SOUND = "rbxasset://sounds/volume_slider.ogg"
 
 --------------------------------------------------------------------
 -- Style
@@ -81,6 +85,46 @@ local function text(parent, p)
 	stroke(l, p.StrokeThickness or 2.5)
 	return l
 end
+-- short UI sounds (hover / click)
+local function blip(speed, volume)
+	local s = Instance.new("Sound")
+	s.SoundId = HOVER_SOUND
+	s.PlaybackSpeed = speed
+	s.Volume = volume
+	s.Parent = SoundService
+	s:Play()
+	game:GetService("Debris"):AddItem(s, 2)
+end
+
+-- studded texture over a card: an uploaded tile image if ShopItems.StudTexture is set,
+-- otherwise rows of round studs drawn as text (a highlight dot over a shadow dot)
+local STUD_ROWS = string.rep(string.rep("●  ", 60) .. "\n", 30)
+local function studs(card)
+	card.ClipsDescendants = true
+	if Items.StudTexture and Items.StudTexture ~= "" then
+		mk("ImageLabel", { Name = "Studs", ZIndex = 0, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Image = Items.StudTexture,
+			ScaleType = Enum.ScaleType.Tile, TileSize = UDim2.fromOffset(40, 40), ImageTransparency = 0.55 }, card)
+		return
+	end
+	for i, look in ipairs({ { Color3.new(0, 0, 0), 0.82, 2 }, { Color3.new(1, 1, 1), 0.8, 0 } }) do
+		mk("TextLabel", {
+			Name = "Studs" .. i,
+			ZIndex = 0,
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(6 + look[3] * 0.5, 4 + look[3]),
+			Size = UDim2.fromScale(2, 2),
+			Font = Enum.Font.GothamBold,
+			TextSize = 20,
+			LineHeight = 1.15,
+			Text = STUD_ROWS,
+			TextColor3 = look[1],
+			TextTransparency = look[2],
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+		}, card)
+	end
+end
+
 local function fmt(n)
 	local s = tostring(math.floor(n))
 	while true do
@@ -147,6 +191,7 @@ end
 --------------------------------------------------------------------
 local gui = mk("ScreenGui", { Name = "ShopUI", ResetOnSpawn = false, DisplayOrder = 20, Enabled = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets }, playerGui)
 local dim = mk("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = C3(0, 0, 0), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false }, gui)
+dim:SetAttribute("HoverWired", true) -- the backdrop gets no hover sound
 local window = mk("Frame", {
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5),
@@ -156,6 +201,7 @@ local window = mk("Frame", {
 corner(window, 20)
 stroke(window, 4, INK)
 gradient(window, C3(58, 52, 110), C3(28, 26, 52))
+studs(window)
 mk("UISizeConstraint", { MaxSize = Vector2.new(900, 680) }, window)
 local windowScale = mk("UIScale", { Scale = 1 }, window)
 
@@ -242,20 +288,19 @@ local function buyButton(parent, p)
 	local btn = mk("TextButton", { ZIndex = 4, Position = UDim2.fromScale(0, top), Size = UDim2.fromScale(1, 1 - top), BackgroundColor3 = WHITE, Text = "", AutoButtonColor = true }, holder)
 	corner(btn, 12)
 	stroke(btn, 3)
-	local grad = gradient(btn, GREEN_TOP, GREEN_BOT)
+	local onTop, onBot = (p.colors and p.colors[1]) or GREEN_TOP, (p.colors and p.colors[2]) or GREEN_BOT
+	local grad = gradient(btn, onTop, onBot)
 	local label = text(btn, { ZIndex = 5, Text = p.label, Font = TITLE_FONT, Size = UDim2.fromScale(0.86, 0.66), Position = UDim2.fromScale(0.07, 0.17), StrokeThickness = 3 })
 	if p.onClick then
 		btn.Activated:Connect(function()
-			local s = mk("UIScale", { Scale = 0.92 }, btn)
-			TweenService:Create(s, TweenInfo.new(0.12), { Scale = 1 }):Play()
-			game:GetService("Debris"):AddItem(s, 0.2)
+			blip(0.9, 0.6)
 			p.onClick()
 		end)
 	end
 	local api = { frame = holder }
 	function api.set(labelText, enabled)
 		label.Text = labelText
-		grad.Color = enabled == false and ColorSequence.new(GREY_TOP, GREY_BOT) or ColorSequence.new(GREEN_TOP, GREEN_BOT)
+		grad.Color = enabled == false and ColorSequence.new(GREY_TOP, GREY_BOT) or ColorSequence.new(onTop, onBot)
 	end
 	return api
 end
@@ -380,10 +425,11 @@ end
 
 local function eggCard(egg)
 	local colors = Items.EggColors[egg.Id] or { C3(120, 140, 170), C3(70, 82, 110) }
-	local card = mk("Frame", { Size = UDim2.new(1, 0, 0, 230), BackgroundColor3 = WHITE, LayoutOrder = nextOrder() }, scroll)
+	local card = mk("Frame", { Size = UDim2.new(1, 0, 0, 296), BackgroundColor3 = WHITE, LayoutOrder = nextOrder() }, scroll)
 	corner(card, 18)
 	stroke(card, 4)
 	gradient(card, colors[1], colors[2])
+	studs(card)
 
 	viewport(card, kitModel(Items.EggIcons[egg.Id] or "EggCommon"), { size = UDim2.new(0.24, 0, 0.92, 0), position = UDim2.new(0.01, 0, 0.04, 0), zoom = 1.45, speed = 0.8 })
 	chip(card, string.upper(egg.Name), colors[2]:Lerp(INK, 0.3), { anchor = Vector2.new(0, 0), position = UDim2.fromOffset(12, 10), size = UDim2.fromOffset(170, 32) })
@@ -431,6 +477,24 @@ local function eggCard(egg)
 			api.set("🪙 " .. fmt(egg.Cost * count), (state.Coins or 0) >= egg.Cost * count)
 		end
 	end)
+
+	-- Robux option under the coin buttons: one egg
+	local key = Items.EggRobuxKey[egg.Id]
+	local def = key and findByKey(Config.Products, key)
+	if def then
+		local robuxBtn = buyButton(card, {
+			position = UDim2.new(0.26, 0, 0, 230),
+			size = UDim2.new(0.73, 0, 0, 52),
+			label = ROBUX,
+			colors = { C3(200, 120, 255), C3(120, 50, 220) },
+			onClick = function()
+				PromptProduct:FireServer(key)
+			end,
+		})
+		robuxPrice(def.Id, Enum.InfoType.Product, Items.EggRobux[egg.Id] or 0, function(s)
+			robuxBtn.set("Buy 1 with  " .. s, true)
+		end)
+	end
 end
 
 --------------------------------------------------------------------
@@ -453,6 +517,7 @@ local function productCard(row, count, i, item, top, bottom)
 	corner(card, 16)
 	stroke(card, 4)
 	gradient(card, top, bottom)
+	studs(card)
 	local hasBadge = item.Badge ~= nil
 	if hasBadge then
 		chip(card, item.Badge, BADGE_COLORS[i] or BADGE_COLORS[1], { anchor = Vector2.new(0.5, 0), position = UDim2.new(0.5, 0, 0, 8), size = UDim2.new(0.86, 0, 0, 32) })
@@ -486,6 +551,7 @@ local function passCard(row, i, item)
 	corner(card, 16)
 	stroke(card, 4)
 	gradient(card, item.Color:Lerp(WHITE, 0.25), item.Color:Lerp(INK, 0.25))
+	studs(card)
 	local circle = mk("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.04, 0, 0.5, 0), Size = UDim2.fromScale(0.4, 0.85), BackgroundColor3 = WHITE, BackgroundTransparency = 0.7 }, card)
 	mk("UIAspectRatioConstraint", { AspectRatio = 1 }, circle)
 	corner(circle, 999)
@@ -525,6 +591,7 @@ local function trailCards()
 		corner(card, 16)
 		stroke(card, 4)
 		gradient(card, c.Color1:Lerp(INK, 0.15), c.Color2:Lerp(INK, 0.55))
+		studs(card)
 		viewport(card, kitModel(Items.TrailIcon, c.Color1), { size = UDim2.new(0.9, 0, 0.5, 0), position = UDim2.new(0.05, 0, 0.04, 0), zoom = 1.5 })
 		text(card, { Text = c.Name, Position = UDim2.new(0.05, 0, 0.55, 0), Size = UDim2.new(0.9, 0, 0.14, 0) })
 		local btn = buyButton(card, {
@@ -570,6 +637,7 @@ local function freeCard()
 	corner(card, 18)
 	stroke(card, 4)
 	gradient(card, C3(80, 190, 255), C3(20, 110, 230))
+	studs(card)
 	local circle = mk("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.03, 0, 0.5, 0), Size = UDim2.fromScale(0.3, 0.85), BackgroundColor3 = WHITE, BackgroundTransparency = 0.6 }, card)
 	mk("UIAspectRatioConstraint", { AspectRatio = 1 }, circle)
 	corner(circle, 999)
@@ -598,12 +666,103 @@ local function freeCard()
 end
 
 --------------------------------------------------------------------
+-- Summon a disaster (Robux): pick one, the next roll lands on it
+--------------------------------------------------------------------
+local TIER_FALLBACK = { Common = { C3(245, 245, 250), C3(170, 178, 196) }, Rare = { C3(60, 150, 255), C3(20, 70, 200) },
+	Mythic = { C3(190, 90, 255), C3(255, 80, 200) }, Transcendent = { C3(120, 255, 240), C3(255, 240, 120) } }
+local function tierColors(rarity)
+	local r = DisasterConfig.Rarities and DisasterConfig.Rarities[rarity]
+	local fb = TIER_FALLBACK[rarity] or TIER_FALLBACK.Common
+	return (r and r.Glow and r.Color) or fb[1], (r and r.Glow) or fb[2]
+end
+
+local function summonSection()
+	sectionTitle("Summon a Disaster")
+	order += 1
+	local info = text(scroll, { Text = "Pick a disaster - the next roll lands on it!", Size = UDim2.new(1, 0, 0, 26), LayoutOrder = order })
+
+	local grid = mk("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = nextOrder() }, scroll)
+	mk("UIGridLayout", { CellSize = UDim2.new(0.185, 0, 0, 112), CellPadding = UDim2.new(0.012, 0, 0, 10), HorizontalAlignment = Enum.HorizontalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, grid)
+
+	local selected, selectedStroke = nil, nil
+	local buyHolder = mk("Frame", { Size = UDim2.new(0.7, 0, 0, 66), BackgroundTransparency = 1, LayoutOrder = nextOrder() }, scroll)
+	local buy
+	local rank = { Common = 1, Rare = 2, Mythic = 3, Transcendent = 4 }
+	local list = table.clone(DisasterConfig.Disasters)
+	table.sort(list, function(a, b)
+		local ra, rb = rank[a.Rarity or "Common"] or 1, rank[b.Rarity or "Common"] or 1
+		if ra ~= rb then
+			return ra < rb
+		end
+		return a.Name < b.Name
+	end)
+
+	local function select(def, strokeObj)
+		if selectedStroke then
+			selectedStroke.Thickness = 3
+			selectedStroke.Color = selectedStroke:GetAttribute("Base")
+		end
+		selected, selectedStroke = def, strokeObj
+		strokeObj.Thickness = 6
+		strokeObj.Color = WHITE
+		local rarity = def.Rarity or "Common"
+		local key = "Summon" .. rarity
+		local product = findByKey(Config.Products, key)
+		robuxPrice(product and product.Id or 0, Enum.InfoType.Product, Items.SummonRobux[rarity] or 0, function(s)
+			buy.set(("🔮 SUMMON %s   %s"):format(string.upper(def.Name), s), true)
+		end)
+	end
+
+	for i, def in ipairs(list) do
+		local rarity = def.Rarity or "Common"
+		local textColor, glow = tierColors(rarity)
+		local cell = mk("TextButton", { Text = "", AutoButtonColor = true, BackgroundColor3 = WHITE, LayoutOrder = i }, grid)
+		corner(cell, 14)
+		local st = stroke(cell, 3, textColor)
+		st:SetAttribute("Base", textColor)
+		gradient(cell, glow:Lerp(WHITE, 0.2), glow:Lerp(INK, 0.55))
+		studs(cell)
+		text(cell, { Text = def.Emoji or "?", Font = Enum.Font.GothamBlack, Position = UDim2.fromScale(0.1, 0.05), Size = UDim2.fromScale(0.8, 0.38) })
+		text(cell, { Text = string.upper(def.Name), Font = TITLE_FONT, TextColor3 = textColor, Position = UDim2.fromScale(0.05, 0.45), Size = UDim2.fromScale(0.9, 0.24), StrokeThickness = 3 })
+		text(cell, { Text = ("%s  •  %s %d"):format(string.upper(rarity), ROBUX, Items.SummonRobux[rarity] or 0), TextColor3 = textColor, Position = UDim2.fromScale(0.05, 0.74), Size = UDim2.fromScale(0.9, 0.17) })
+		cell.Activated:Connect(function()
+			blip(1.2, 0.6)
+			select(def, st)
+		end)
+	end
+
+	buy = buyButton(buyHolder, {
+		size = UDim2.fromScale(1, 1),
+		label = "Pick a disaster above",
+		colors = { C3(150, 110, 255), C3(80, 40, 200) },
+		onClick = function()
+			if not selected then
+				toast("Pick a disaster first!", C3(255, 220, 120))
+				return
+			end
+			if SummonRemote then
+				SummonRemote:FireServer("Choose", selected.Id)
+			end
+			PromptProduct:FireServer("Summon" .. (selected.Rarity or "Common"))
+		end,
+	})
+	buy.set("Pick a disaster above", false)
+	table.insert(refreshers, function()
+		local waiting = ReplicatedStorage:GetAttribute("SummonQueue") or 0
+		info.Text = waiting > 0 and ("Pick a disaster - the next roll lands on it!  (%d summon%s waiting)"):format(waiting, waiting == 1 and "" or "s")
+			or "Pick a disaster - the next roll lands on it!"
+	end)
+end
+
+--------------------------------------------------------------------
 -- Build the page
 --------------------------------------------------------------------
 sectionTitle("Eggs")
 for _, egg in ipairs(PetConfig.Eggs) do
 	eggCard(egg)
 end
+
+summonSection()
 
 sectionTitle("Coin Packs")
 local coinRow = cardRow(250)
@@ -684,6 +843,45 @@ Notify.OnClientEvent:Connect(function(msg, kind)
 		toast(msg)
 	end
 end)
+
+-- Robux egg hatched on the server -> same hatch results screen as coin eggs; summons announced
+if SummonRemote then
+	SummonRemote.OnClientEvent:Connect(function(kind, a, b)
+		if kind == "Hatched" then
+			if not gui.Enabled then
+				openShop()
+			end
+			showResults(PetConfig.GetEgg(a), { b })
+			RequestData:FireServer()
+		elseif kind == "Queued" then
+			local def = DisasterConfig.GetDisasterById(a)
+			if gui.Enabled and def then
+				toast(("🔮 %s summoned %s!"):format(tostring(b), def.Name), tierColors(def.Rarity or "Common"))
+			end
+			refresh()
+		end
+	end)
+end
+
+-- every button in the shop: soft tick + a little grow on hover
+local function wireHover(button)
+	if not button:IsA("GuiButton") or button:GetAttribute("HoverWired") then
+		return
+	end
+	button:SetAttribute("HoverWired", true)
+	local s = button:FindFirstChildOfClass("UIScale") or mk("UIScale", {}, button)
+	button.MouseEnter:Connect(function()
+		blip(1.5, 0.35)
+		TweenService:Create(s, TweenInfo.new(0.12, Enum.EasingStyle.Back), { Scale = 1.06 }):Play()
+	end)
+	button.MouseLeave:Connect(function()
+		TweenService:Create(s, TweenInfo.new(0.12), { Scale = 1 }):Play()
+	end)
+end
+for _, d in ipairs(gui:GetDescendants()) do
+	wireHover(d)
+end
+gui.DescendantAdded:Connect(wireHover)
 
 -- turn the icons + rainbow frames while the shop is open
 RunService.RenderStepped:Connect(function()

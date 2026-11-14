@@ -15,7 +15,26 @@ local ShopItems = {}
 ShopItems.NewProducts = {
 	{ Key = "Coins6000", Id = 0, Kind = "Coins", Coins = 6000, Name = "6,000 Coins", Desc = "Instant coins" },
 	{ Key = "Coins15000", Id = 0, Kind = "Coins", Coins = 15000, Name = "15,000 Coins", Desc = "Instant coins" },
+	-- disaster summons (one product per rarity; the player picks the disaster in the shop)
+	{ Key = "SummonCommon", Id = 0, Kind = "Summon", Rarity = "Common", Name = "Common Summon", Desc = "Your pick comes next roll" },
+	{ Key = "SummonRare", Id = 0, Kind = "Summon", Rarity = "Rare", Name = "Rare Summon", Desc = "Your pick comes next roll" },
+	{ Key = "SummonMythic", Id = 0, Kind = "Summon", Rarity = "Mythic", Name = "Mythic Summon", Desc = "Your pick comes next roll" },
+	{ Key = "SummonTranscendent", Id = 0, Kind = "Summon", Rarity = "Transcendent", Name = "Transcendent Summon", Desc = "Your pick comes next roll" },
+	-- eggs for Robux (one egg each)
+	{ Key = "RobuxEggCommon", Id = 0, Kind = "RobuxEgg", Egg = "CommonEgg", Name = "Common Egg", Desc = "Hatch 1 egg" },
+	{ Key = "RobuxEggRare", Id = 0, Kind = "RobuxEgg", Egg = "RareEgg", Name = "Rare Egg", Desc = "Hatch 1 egg" },
+	{ Key = "RobuxEggMythic", Id = 0, Kind = "RobuxEgg", Egg = "MythicEgg", Name = "Mythic Egg", Desc = "Hatch 1 egg" },
 }
+
+-- Robux prices shown while the ids are 0 (Transcendent summon 39 and the egg prices as requested;
+-- Common / Rare / Mythic summon prices are suggestions - change them here)
+ShopItems.SummonRobux = { Common = 9, Rare = 19, Mythic = 29, Transcendent = 39 }
+ShopItems.EggRobux = { CommonEgg = 9, RareEgg = 19, MythicEgg = 39 }
+ShopItems.EggRobuxKey = { CommonEgg = "RobuxEggCommon", RareEgg = "RobuxEggRare", MythicEgg = "RobuxEggMythic" }
+
+-- Studded card texture. "" = studs drawn with text dots (works right away). After uploading
+-- stud_tile.png (made in Blender, next to LobbyKit.glb) as a Decal/Image, paste its rbxassetid:// here.
+ShopItems.StudTexture = ""
 
 -- Icon = Blender prop shown in the card (LobbyKitProps). Robux = price shown while the id is 0.
 ShopItems.CoinPacks = {

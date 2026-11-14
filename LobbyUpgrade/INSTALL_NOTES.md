@@ -7,11 +7,16 @@
 3. Open **View > Command Bar**, paste this line, press Enter:
 
    ```lua
-   local s=game:GetService("ServerScriptService") local u=s:FindFirstChild("TuffUpdate") or workspace:FindFirstChild("TuffUpdate") if not u then return warn("No TuffUpdate folder - insert TuffUpdate_AllScripts.rbxmx first. Nothing was changed.") end local sp=game.StarterPlayer local function put(n,p) local new=u:FindFirstChild(n) if not new then return end local o=p:FindFirstChild(n) if o then o:Destroy() end new.Parent=p end put("LobbyUpgrade",s) put("DisasterGameManager",s) put("DrowningSystem",s) put("DisasterConfig",game.ReplicatedStorage.DisasterAssets) put("PetsClient",sp.StarterPlayerScripts) put("UnderwaterFX",sp.StarterPlayerScripts) put("SwimController",sp.StarterCharacterScripts) s.LobbyUpgrade.Enabled=true s.DisasterGameManager.Enabled=true s.DrowningSystem.Enabled=true u:Destroy() print("TuffUpdate installed")
+   local s=game:GetService("ServerScriptService") local u=s:FindFirstChild("TuffUpdate") or workspace:FindFirstChild("TuffUpdate") if not u then return warn("No TuffUpdate folder - insert TuffUpdate_AllScripts.rbxmx first. Nothing was changed.") end local sp=game.StarterPlayer local function put(n,p) local new=u:FindFirstChild(n) if not new then return end local o=p:FindFirstChild(n) if o then o:Destroy() end new.Parent=p end put("LobbyUpgrade",s) put("DisasterGameManager",s) put("DrowningSystem",s) put("DisasterConfig",game.ReplicatedStorage.DisasterAssets) put("PetsClient",sp.StarterPlayerScripts) put("UnderwaterFX",sp.StarterPlayerScripts) put("SwimController",sp.StarterCharacterScripts) put("ProgressionServer",s) put("PetService",s) put("DisasterSelectorClient",sp.StarterPlayerScripts) for _,n in ipairs({"LobbyUpgrade","DisasterGameManager","DrowningSystem","ProgressionServer","PetService"}) do s[n].Enabled=true end u:Destroy() print("TuffUpdate installed")
    ```
 
-   It replaces LobbyUpgrade, DisasterGameManager, DrowningSystem, DisasterConfig, PetsClient, UnderwaterFX and
-   SwimController with the new ones and turns them on.
+   It replaces LobbyUpgrade, DisasterGameManager, DrowningSystem, ProgressionServer, PetService, DisasterConfig,
+   PetsClient, UnderwaterFX, SwimController and DisasterSelectorClient with the new ones and turns them on.
+   Safe to run twice: with no TuffUpdate folder it changes nothing.
+
+   Note: the disaster summons and Robux eggs need developer products. Create them in Creator Hub and paste the
+   ids into `ShopItems.NewProducts` (SummonCommon / Rare / Mythic / Transcendent, RobuxEggCommon / Rare / Mythic).
+   Optional: upload `stud_tile.png` as an image and paste its id into `ShopItems.StudTexture`.
    The Output window says `TuffUpdate installed` when it worked. Then press Play.
 
 ## Step by step
