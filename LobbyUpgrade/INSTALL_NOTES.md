@@ -1,0 +1,33 @@
+# Installing the disaster + shop upgrade
+
+1. In Studio, delete the old `LobbyKit` model and the old `ServerScriptService > LobbyUpgrade`.
+2. **File > Import 3D > `LobbyKit.glb`** (it now also holds the shop items, effect pieces and new hazard models).
+3. Drag **`LobbyUpgrade.rbxmx`** into `ServerScriptService`. It contains LobbyUpgrade with
+   KitLoader, KitAnimator, DisasterFX, ShopUI and ShopItems inside.
+4. One line in **`StarterPlayerScripts > PetsClient`** so the Pets tab shows pets hatched from the new shop.
+   In `setTab`, replace
+
+   ```lua
+   if name == "Pets" then
+       refreshPets()
+   end
+   ```
+
+   with
+
+   ```lua
+   if name == "Pets" then
+       local res = request("State")
+       if res.ok then applyState(res) end
+       refreshPets()
+   end
+   ```
+
+## Robux items
+Prices on the cards come from `ShopItems` until a real id is set. Then the real Roblox price is shown.
+- Existing items (500 / 2,500 coins, Streak Saver, Revive, Server Luck, 2x Coins, VIP): put their ids in `ProgressionConfig`.
+- The two new coin packs (6,000 and 15,000 coins): put their ids in `ShopItems.NewProducts`.
+
+## Settings
+- `DisasterFX`: `SHOW_INTRO`, `REPLACE_HAZARD_LOOKS`, `WIND_PUSH` (0 = wind is visual only), debris counts, and `PROFILES` (wind / weather / colour per disaster).
+- To use your own tornado instead of the Blender one, put it in `ServerStorage > TornadoAssets > Tornado` and LobbyUpgrade leaves it alone.
