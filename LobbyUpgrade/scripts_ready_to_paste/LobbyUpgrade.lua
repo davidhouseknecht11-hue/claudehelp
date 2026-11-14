@@ -105,7 +105,15 @@ do
 	end
 end
 
-for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems", "MoonFX" }) do
+-- Disaster summons + Robux eggs (shop), paid out through ProgressionServer's ExtraProductHandlers hook
+do
+	local summonModule = script:FindFirstChild("SummonService")
+	if summonModule then
+		require(summonModule).init()
+	end
+end
+
+for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems", "MoonFX", "RollReel", "BlenderAnimator", "BlenderAnims" }) do
 	local child = script:FindFirstChild(name)
 	if child then
 		child.Parent = ReplicatedStorage

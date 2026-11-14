@@ -23,6 +23,10 @@ sources = {
     "ShopItems": read("src", "ShopItems.lua"),
     "MoonCollision": read("src", "MoonCollision.lua"),
     "MoonFX": read("src", "MoonFX.lua"),
+    "RollReel": read("src", "RollReel.lua"),
+    "SummonService": read("src", "SummonService.lua"),
+    "BlenderAnimator": read("src", "BlenderAnimator.lua"),
+    "BlenderAnims": read("src", "BlenderAnims.lua"),
 }
 assert "--@PALETTE@" not in sources["KitLoader"]
 
@@ -42,7 +46,11 @@ children = item("ModuleScript", "KitLoader", sources["KitLoader"]) + \
     item("Script", "ShopUI", sources["ShopUI"], run_context=2) + \
     item("ModuleScript", "ShopItems", sources["ShopItems"]) + \
     item("ModuleScript", "MoonCollision", sources["MoonCollision"]) + \
-    item("Script", "MoonFX", sources["MoonFX"], run_context=2)   # run_context 2 = Client
+    item("Script", "MoonFX", sources["MoonFX"], run_context=2) + \
+    item("Script", "RollReel", sources["RollReel"], run_context=2) + \
+    item("ModuleScript", "SummonService", sources["SummonService"]) + \
+    item("Script", "BlenderAnimator", sources["BlenderAnimator"], run_context=2) + \
+    item("ModuleScript", "BlenderAnims", sources["BlenderAnims"])   # run_context 2 = Client
 xml = '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + \
     item("Script", "LobbyUpgrade", sources["LobbyUpgrade"], run_context=0, children=children) + "</roblox>\n"
 
@@ -59,7 +67,8 @@ print("wrote LobbyUpgrade.rbxmx", len(xml), "bytes")
 # Patched copies of the game's own scripts (replace the originals with Insert from File)
 patched = ""
 for name, cls in (("PetsClient", "LocalScript"), ("DisasterConfig", "ModuleScript"), ("DisasterGameManager", "Script"),
-                  ("SwimController", "LocalScript"), ("UnderwaterFX", "LocalScript"), ("DrowningSystem", "Script")):
+                  ("SwimController", "LocalScript"), ("UnderwaterFX", "LocalScript"), ("DrowningSystem", "Script"),
+                  ("ProgressionServer", "Script"), ("PetService", "Script"), ("DisasterSelectorClient", "LocalScript")):
     src = read("scripts_ready_to_paste", name + ".lua")
     patched += item(cls, name, src, disabled=(cls == "Script"))  # off until moved (see INSTALL_NOTES)
     one = '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + item(cls, name, src) + "</roblox>\n"

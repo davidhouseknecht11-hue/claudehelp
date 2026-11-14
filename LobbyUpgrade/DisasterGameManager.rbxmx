@@ -1292,6 +1292,17 @@ local function runRound()
 		disaster = config.GetDisasterById(forcedId)
 	end
 
+	-- A disaster summoned in the shop (LobbyUpgrade's SummonService queue) comes next
+	if not disaster then
+		local take = ServerStorage:FindFirstChild("TakeSummon")
+		if take and take:IsA("BindableFunction") then
+			local ok, id = pcall(take.Invoke, take)
+			if ok and id then
+				disaster = config.GetDisasterById(id)
+			end
+		end
+	end
+
 	if not disaster then
 		local luckRounds = ServerStorage:GetAttribute("LuckRounds") or 0
 		if luckRounds > 0 then

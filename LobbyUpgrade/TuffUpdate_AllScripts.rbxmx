@@ -105,7 +105,15 @@ do
 	end
 end
 
-for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems", "MoonFX" }) do
+-- Disaster summons + Robux eggs (shop), paid out through ProgressionServer's ExtraProductHandlers hook
+do
+	local summonModule = script:FindFirstChild("SummonService")
+	if summonModule then
+		require(summonModule).init()
+	end
+end
+
+for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems", "MoonFX", "RollReel", "BlenderAnimator", "BlenderAnims" }) do
 	local child = script:FindFirstChild(name)
 	if child then
 		child.Parent = ReplicatedStorage
@@ -2367,6 +2375,10 @@ local PromptPass = remotes:WaitForChild("PromptPass")
 local PromptProduct = remotes:WaitForChild("PromptProduct")
 local ShopOpened = remotes:WaitForChild("ShopOpened")
 local Notify = remotes:WaitForChild("Notify")
+local SummonRemote = ReplicatedStorage:WaitForChild("SummonRemote", 30)
+local DisasterConfig = require(ReplicatedStorage:WaitForChild("DisasterAssets"):WaitForChild("DisasterConfig"))
+local SoundService = game:GetService("SoundService")
+local HOVER_SOUND = "rbxasset://sounds/volume_slider.ogg"
 
 --------------------------------------------------------------------
 -- Style
@@ -2413,6 +2425,46 @@ local function text(parent, p)
 	stroke(l, p.StrokeThickness or 2.5)
 	return l
 end
+-- short UI sounds (hover / click)
+local function blip(speed, volume)
+	local s = Instance.new("Sound")
+	s.SoundId = HOVER_SOUND
+	s.PlaybackSpeed = speed
+	s.Volume = volume
+	s.Parent = SoundService
+	s:Play()
+	game:GetService("Debris"):AddItem(s, 2)
+end
+
+-- studded texture over a card: an uploaded tile image if ShopItems.StudTexture is set,
+-- otherwise rows of round studs drawn as text (a highlight dot over a shadow dot)
+local STUD_ROWS = string.rep(string.rep("●  ", 60) .. "\n", 30)
+local function studs(card)
+	card.ClipsDescendants = true
+	if Items.StudTexture and Items.StudTexture ~= "" then
+		mk("ImageLabel", { Name = "Studs", ZIndex = 0, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Image = Items.StudTexture,
+			ScaleType = Enum.ScaleType.Tile, TileSize = UDim2.fromOffset(40, 40), ImageTransparency = 0.55 }, card)
+		return
+	end
+	for i, look in ipairs({ { Color3.new(0, 0, 0), 0.82, 2 }, { Color3.new(1, 1, 1), 0.8, 0 } }) do
+		mk("TextLabel", {
+			Name = "Studs" .. i,
+			ZIndex = 0,
+			BackgroundTransparency = 1,
+			Position = UDim2.fromOffset(6 + look[3] * 0.5, 4 + look[3]),
+			Size = UDim2.fromScale(2, 2),
+			Font = Enum.Font.GothamBold,
+			TextSize = 20,
+			LineHeight = 1.15,
+			Text = STUD_ROWS,
+			TextColor3 = look[1],
+			TextTransparency = look[2],
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+		}, card)
+	end
+end
+
 local function fmt(n)
 	local s = tostring(math.floor(n))
 	while true do
@@ -2479,6 +2531,7 @@ end
 --------------------------------------------------------------------
 local gui = mk("ScreenGui", { Name = "ShopUI", ResetOnSpawn = false, DisplayOrder = 20, Enabled = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets }, playerGui)
 local dim = mk("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = C3(0, 0, 0), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false }, gui)
+dim:SetAttribute("HoverWired", true) -- the backdrop gets no hover sound
 local window = mk("Frame", {
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5),
@@ -2488,6 +2541,7 @@ local window = mk("Frame", {
 corner(window, 20)
 stroke(window, 4, INK)
 gradient(window, C3(58, 52, 110), C3(28, 26, 52))
+studs(window)
 mk("UISizeConstraint", { MaxSize = Vector2.new(900, 680) }, window)
 local windowScale = mk("UIScale", { Scale = 1 }, window)
 
@@ -2574,20 +2628,19 @@ local function buyButton(parent, p)
 	local btn = mk("TextButton", { ZIndex = 4, Position = UDim2.fromScale(0, top), Size = UDim2.fromScale(1, 1 - top), BackgroundColor3 = WHITE, Text = "", AutoButtonColor = true }, holder)
 	corner(btn, 12)
 	stroke(btn, 3)
-	local grad = gradient(btn, GREEN_TOP, GREEN_BOT)
+	local onTop, onBot = (p.colors and p.colors[1]) or GREEN_TOP, (p.colors and p.colors[2]) or GREEN_BOT
+	local grad = gradient(btn, onTop, onBot)
 	local label = text(btn, { ZIndex = 5, Text = p.label, Font = TITLE_FONT, Size = UDim2.fromScale(0.86, 0.66), Position = UDim2.fromScale(0.07, 0.17), StrokeThickness = 3 })
 	if p.onClick then
 		btn.Activated:Connect(function()
-			local s = mk("UIScale", { Scale = 0.92 }, btn)
-			TweenService:Create(s, TweenInfo.new(0.12), { Scale = 1 }):Play()
-			game:GetService("Debris"):AddItem(s, 0.2)
+			blip(0.9, 0.6)
 			p.onClick()
 		end)
 	end
 	local api = { frame = holder }
 	function api.set(labelText, enabled)
 		label.Text = labelText
-		grad.Color = enabled == false and ColorSequence.new(GREY_TOP, GREY_BOT) or ColorSequence.new(GREEN_TOP, GREEN_BOT)
+		grad.Color = enabled == false and ColorSequence.new(GREY_TOP, GREY_BOT) or ColorSequence.new(onTop, onBot)
 	end
 	return api
 end
@@ -2712,10 +2765,11 @@ end
 
 local function eggCard(egg)
 	local colors = Items.EggColors[egg.Id] or { C3(120, 140, 170), C3(70, 82, 110) }
-	local card = mk("Frame", { Size = UDim2.new(1, 0, 0, 230), BackgroundColor3 = WHITE, LayoutOrder = nextOrder() }, scroll)
+	local card = mk("Frame", { Size = UDim2.new(1, 0, 0, 296), BackgroundColor3 = WHITE, LayoutOrder = nextOrder() }, scroll)
 	corner(card, 18)
 	stroke(card, 4)
 	gradient(card, colors[1], colors[2])
+	studs(card)
 
 	viewport(card, kitModel(Items.EggIcons[egg.Id] or "EggCommon"), { size = UDim2.new(0.24, 0, 0.92, 0), position = UDim2.new(0.01, 0, 0.04, 0), zoom = 1.45, speed = 0.8 })
 	chip(card, string.upper(egg.Name), colors[2]:Lerp(INK, 0.3), { anchor = Vector2.new(0, 0), position = UDim2.fromOffset(12, 10), size = UDim2.fromOffset(170, 32) })
@@ -2763,6 +2817,24 @@ local function eggCard(egg)
 			api.set("🪙 " .. fmt(egg.Cost * count), (state.Coins or 0) >= egg.Cost * count)
 		end
 	end)
+
+	-- Robux option under the coin buttons: one egg
+	local key = Items.EggRobuxKey[egg.Id]
+	local def = key and findByKey(Config.Products, key)
+	if def then
+		local robuxBtn = buyButton(card, {
+			position = UDim2.new(0.26, 0, 0, 230),
+			size = UDim2.new(0.73, 0, 0, 52),
+			label = ROBUX,
+			colors = { C3(200, 120, 255), C3(120, 50, 220) },
+			onClick = function()
+				PromptProduct:FireServer(key)
+			end,
+		})
+		robuxPrice(def.Id, Enum.InfoType.Product, Items.EggRobux[egg.Id] or 0, function(s)
+			robuxBtn.set("Buy 1 with  " .. s, true)
+		end)
+	end
 end
 
 --------------------------------------------------------------------
@@ -2785,6 +2857,7 @@ local function productCard(row, count, i, item, top, bottom)
 	corner(card, 16)
 	stroke(card, 4)
 	gradient(card, top, bottom)
+	studs(card)
 	local hasBadge = item.Badge ~= nil
 	if hasBadge then
 		chip(card, item.Badge, BADGE_COLORS[i] or BADGE_COLORS[1], { anchor = Vector2.new(0.5, 0), position = UDim2.new(0.5, 0, 0, 8), size = UDim2.new(0.86, 0, 0, 32) })
@@ -2818,6 +2891,7 @@ local function passCard(row, i, item)
 	corner(card, 16)
 	stroke(card, 4)
 	gradient(card, item.Color:Lerp(WHITE, 0.25), item.Color:Lerp(INK, 0.25))
+	studs(card)
 	local circle = mk("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.04, 0, 0.5, 0), Size = UDim2.fromScale(0.4, 0.85), BackgroundColor3 = WHITE, BackgroundTransparency = 0.7 }, card)
 	mk("UIAspectRatioConstraint", { AspectRatio = 1 }, circle)
 	corner(circle, 999)
@@ -2857,6 +2931,7 @@ local function trailCards()
 		corner(card, 16)
 		stroke(card, 4)
 		gradient(card, c.Color1:Lerp(INK, 0.15), c.Color2:Lerp(INK, 0.55))
+		studs(card)
 		viewport(card, kitModel(Items.TrailIcon, c.Color1), { size = UDim2.new(0.9, 0, 0.5, 0), position = UDim2.new(0.05, 0, 0.04, 0), zoom = 1.5 })
 		text(card, { Text = c.Name, Position = UDim2.new(0.05, 0, 0.55, 0), Size = UDim2.new(0.9, 0, 0.14, 0) })
 		local btn = buyButton(card, {
@@ -2902,6 +2977,7 @@ local function freeCard()
 	corner(card, 18)
 	stroke(card, 4)
 	gradient(card, C3(80, 190, 255), C3(20, 110, 230))
+	studs(card)
 	local circle = mk("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.03, 0, 0.5, 0), Size = UDim2.fromScale(0.3, 0.85), BackgroundColor3 = WHITE, BackgroundTransparency = 0.6 }, card)
 	mk("UIAspectRatioConstraint", { AspectRatio = 1 }, circle)
 	corner(circle, 999)
@@ -2930,12 +3006,103 @@ local function freeCard()
 end
 
 --------------------------------------------------------------------
+-- Summon a disaster (Robux): pick one, the next roll lands on it
+--------------------------------------------------------------------
+local TIER_FALLBACK = { Common = { C3(245, 245, 250), C3(170, 178, 196) }, Rare = { C3(60, 150, 255), C3(20, 70, 200) },
+	Mythic = { C3(190, 90, 255), C3(255, 80, 200) }, Transcendent = { C3(120, 255, 240), C3(255, 240, 120) } }
+local function tierColors(rarity)
+	local r = DisasterConfig.Rarities and DisasterConfig.Rarities[rarity]
+	local fb = TIER_FALLBACK[rarity] or TIER_FALLBACK.Common
+	return (r and r.Glow and r.Color) or fb[1], (r and r.Glow) or fb[2]
+end
+
+local function summonSection()
+	sectionTitle("Summon a Disaster")
+	order += 1
+	local info = text(scroll, { Text = "Pick a disaster - the next roll lands on it!", Size = UDim2.new(1, 0, 0, 26), LayoutOrder = order })
+
+	local grid = mk("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = nextOrder() }, scroll)
+	mk("UIGridLayout", { CellSize = UDim2.new(0.185, 0, 0, 112), CellPadding = UDim2.new(0.012, 0, 0, 10), HorizontalAlignment = Enum.HorizontalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, grid)
+
+	local selected, selectedStroke = nil, nil
+	local buyHolder = mk("Frame", { Size = UDim2.new(0.7, 0, 0, 66), BackgroundTransparency = 1, LayoutOrder = nextOrder() }, scroll)
+	local buy
+	local rank = { Common = 1, Rare = 2, Mythic = 3, Transcendent = 4 }
+	local list = table.clone(DisasterConfig.Disasters)
+	table.sort(list, function(a, b)
+		local ra, rb = rank[a.Rarity or "Common"] or 1, rank[b.Rarity or "Common"] or 1
+		if ra ~= rb then
+			return ra < rb
+		end
+		return a.Name < b.Name
+	end)
+
+	local function select(def, strokeObj)
+		if selectedStroke then
+			selectedStroke.Thickness = 3
+			selectedStroke.Color = selectedStroke:GetAttribute("Base")
+		end
+		selected, selectedStroke = def, strokeObj
+		strokeObj.Thickness = 6
+		strokeObj.Color = WHITE
+		local rarity = def.Rarity or "Common"
+		local key = "Summon" .. rarity
+		local product = findByKey(Config.Products, key)
+		robuxPrice(product and product.Id or 0, Enum.InfoType.Product, Items.SummonRobux[rarity] or 0, function(s)
+			buy.set(("🔮 SUMMON %s   %s"):format(string.upper(def.Name), s), true)
+		end)
+	end
+
+	for i, def in ipairs(list) do
+		local rarity = def.Rarity or "Common"
+		local textColor, glow = tierColors(rarity)
+		local cell = mk("TextButton", { Text = "", AutoButtonColor = true, BackgroundColor3 = WHITE, LayoutOrder = i }, grid)
+		corner(cell, 14)
+		local st = stroke(cell, 3, textColor)
+		st:SetAttribute("Base", textColor)
+		gradient(cell, glow:Lerp(WHITE, 0.2), glow:Lerp(INK, 0.55))
+		studs(cell)
+		text(cell, { Text = def.Emoji or "?", Font = Enum.Font.GothamBlack, Position = UDim2.fromScale(0.1, 0.05), Size = UDim2.fromScale(0.8, 0.38) })
+		text(cell, { Text = string.upper(def.Name), Font = TITLE_FONT, TextColor3 = textColor, Position = UDim2.fromScale(0.05, 0.45), Size = UDim2.fromScale(0.9, 0.24), StrokeThickness = 3 })
+		text(cell, { Text = ("%s  •  %s %d"):format(string.upper(rarity), ROBUX, Items.SummonRobux[rarity] or 0), TextColor3 = textColor, Position = UDim2.fromScale(0.05, 0.74), Size = UDim2.fromScale(0.9, 0.17) })
+		cell.Activated:Connect(function()
+			blip(1.2, 0.6)
+			select(def, st)
+		end)
+	end
+
+	buy = buyButton(buyHolder, {
+		size = UDim2.fromScale(1, 1),
+		label = "Pick a disaster above",
+		colors = { C3(150, 110, 255), C3(80, 40, 200) },
+		onClick = function()
+			if not selected then
+				toast("Pick a disaster first!", C3(255, 220, 120))
+				return
+			end
+			if SummonRemote then
+				SummonRemote:FireServer("Choose", selected.Id)
+			end
+			PromptProduct:FireServer("Summon" .. (selected.Rarity or "Common"))
+		end,
+	})
+	buy.set("Pick a disaster above", false)
+	table.insert(refreshers, function()
+		local waiting = ReplicatedStorage:GetAttribute("SummonQueue") or 0
+		info.Text = waiting > 0 and ("Pick a disaster - the next roll lands on it!  (%d summon%s waiting)"):format(waiting, waiting == 1 and "" or "s")
+			or "Pick a disaster - the next roll lands on it!"
+	end)
+end
+
+--------------------------------------------------------------------
 -- Build the page
 --------------------------------------------------------------------
 sectionTitle("Eggs")
 for _, egg in ipairs(PetConfig.Eggs) do
 	eggCard(egg)
 end
+
+summonSection()
 
 sectionTitle("Coin Packs")
 local coinRow = cardRow(250)
@@ -3017,6 +3184,45 @@ Notify.OnClientEvent:Connect(function(msg, kind)
 	end
 end)
 
+-- Robux egg hatched on the server -> same hatch results screen as coin eggs; summons announced
+if SummonRemote then
+	SummonRemote.OnClientEvent:Connect(function(kind, a, b)
+		if kind == "Hatched" then
+			if not gui.Enabled then
+				openShop()
+			end
+			showResults(PetConfig.GetEgg(a), { b })
+			RequestData:FireServer()
+		elseif kind == "Queued" then
+			local def = DisasterConfig.GetDisasterById(a)
+			if gui.Enabled and def then
+				toast(("🔮 %s summoned %s!"):format(tostring(b), def.Name), tierColors(def.Rarity or "Common"))
+			end
+			refresh()
+		end
+	end)
+end
+
+-- every button in the shop: soft tick + a little grow on hover
+local function wireHover(button)
+	if not button:IsA("GuiButton") or button:GetAttribute("HoverWired") then
+		return
+	end
+	button:SetAttribute("HoverWired", true)
+	local s = button:FindFirstChildOfClass("UIScale") or mk("UIScale", {}, button)
+	button.MouseEnter:Connect(function()
+		blip(1.5, 0.35)
+		TweenService:Create(s, TweenInfo.new(0.12, Enum.EasingStyle.Back), { Scale = 1.06 }):Play()
+	end)
+	button.MouseLeave:Connect(function()
+		TweenService:Create(s, TweenInfo.new(0.12), { Scale = 1 }):Play()
+	end)
+end
+for _, d in ipairs(gui:GetDescendants()) do
+	wireHover(d)
+end
+gui.DescendantAdded:Connect(wireHover)
+
 -- turn the icons + rainbow frames while the shop is open
 RunService.RenderStepped:Connect(function()
 	if not gui.Enabled then
@@ -3048,7 +3254,26 @@ local ShopItems = {}
 ShopItems.NewProducts = {
 	{ Key = "Coins6000", Id = 0, Kind = "Coins", Coins = 6000, Name = "6,000 Coins", Desc = "Instant coins" },
 	{ Key = "Coins15000", Id = 0, Kind = "Coins", Coins = 15000, Name = "15,000 Coins", Desc = "Instant coins" },
+	-- disaster summons (one product per rarity; the player picks the disaster in the shop)
+	{ Key = "SummonCommon", Id = 0, Kind = "Summon", Rarity = "Common", Name = "Common Summon", Desc = "Your pick comes next roll" },
+	{ Key = "SummonRare", Id = 0, Kind = "Summon", Rarity = "Rare", Name = "Rare Summon", Desc = "Your pick comes next roll" },
+	{ Key = "SummonMythic", Id = 0, Kind = "Summon", Rarity = "Mythic", Name = "Mythic Summon", Desc = "Your pick comes next roll" },
+	{ Key = "SummonTranscendent", Id = 0, Kind = "Summon", Rarity = "Transcendent", Name = "Transcendent Summon", Desc = "Your pick comes next roll" },
+	-- eggs for Robux (one egg each)
+	{ Key = "RobuxEggCommon", Id = 0, Kind = "RobuxEgg", Egg = "CommonEgg", Name = "Common Egg", Desc = "Hatch 1 egg" },
+	{ Key = "RobuxEggRare", Id = 0, Kind = "RobuxEgg", Egg = "RareEgg", Name = "Rare Egg", Desc = "Hatch 1 egg" },
+	{ Key = "RobuxEggMythic", Id = 0, Kind = "RobuxEgg", Egg = "MythicEgg", Name = "Mythic Egg", Desc = "Hatch 1 egg" },
 }
+
+-- Robux prices shown while the ids are 0 (Transcendent summon 39 and the egg prices as requested;
+-- Common / Rare / Mythic summon prices are suggestions - change them here)
+ShopItems.SummonRobux = { Common = 9, Rare = 19, Mythic = 29, Transcendent = 39 }
+ShopItems.EggRobux = { CommonEgg = 9, RareEgg = 19, MythicEgg = 39 }
+ShopItems.EggRobuxKey = { CommonEgg = "RobuxEggCommon", RareEgg = "RobuxEggRare", MythicEgg = "RobuxEggMythic" }
+
+-- Studded card texture. "" = studs drawn with text dots (works right away). After uploading
+-- stud_tile.png (made in Blender, next to LobbyKit.glb) as a Decal/Image, paste its rbxassetid:// here.
+ShopItems.StudTexture = ""
 
 -- Icon = Blender prop shown in the card (LobbyKitProps). Robux = price shown while the id is 0.
 ShopItems.CoinPacks = {
@@ -4405,6 +4630,693 @@ remote.OnClientEvent:Connect(function(kind, data)
 		warn("[MoonFX] " .. tostring(kind) .. ": " .. tostring(err))
 	end
 end)
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_RollReel"><Properties><string name="Name">RollReel</string><bool name="Disabled">false</bool><token name="RunContext">2</token><ProtectedString name="Source"><![CDATA[-- RollReel  (Script with RunContext = Client, child of the LobbyUpgrade script)
+--
+-- LobbyUpgrade moves this into ReplicatedStorage so it runs on every player's device.
+-- The disaster roll, for everyone: a reel of disaster cards slides past a centre marker,
+-- each card in its rarity's colour (Common white, Rare blue, Mythic purple, Transcendent rainbow).
+-- It spins while the roll happens, then glides to a stop on the real result (no jump: the slow-down
+-- starts at the speed the reel was already moving), ticking on every card. The landing gets bigger
+-- with the rarity. Uses the existing RollStarted / DisasterRevealed / DisasterStarted remotes.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local assets = ReplicatedStorage:WaitForChild("DisasterAssets")
+local remotes = assets:WaitForChild("Remotes")
+local Config = require(assets:WaitForChild("DisasterConfig"))
+local soundsFolder = assets:FindFirstChild("Sounds")
+
+local CARD_W, CARD_H, GAP = 150, 132, 14
+local STEP = CARD_W + GAP
+local SPIN_SPEED = 1500       -- px per second while rolling
+local LAND_TIME = 1.8         -- seconds to glide to the result
+local TICK = "rbxasset://sounds/volume_slider.ogg"
+local C3 = Color3.fromRGB
+local WHITE = Color3.new(1, 1, 1)
+local FALLBACK = { -- if DisasterConfig is older than the rarity redesign
+	Common = { C3(245, 245, 250), C3(170, 178, 196) },
+	Rare = { C3(60, 150, 255), C3(20, 70, 200) },
+	Mythic = { C3(190, 90, 255), C3(255, 80, 200) },
+	Transcendent = { C3(120, 255, 240), C3(255, 240, 120) },
+}
+local RAINBOW = ColorSequence.new({
+	ColorSequenceKeypoint.new(0, C3(255, 70, 70)), ColorSequenceKeypoint.new(0.2, C3(255, 200, 60)),
+	ColorSequenceKeypoint.new(0.4, C3(90, 255, 120)), ColorSequenceKeypoint.new(0.6, C3(70, 200, 255)),
+	ColorSequenceKeypoint.new(0.8, C3(170, 90, 255)), ColorSequenceKeypoint.new(1, C3(255, 70, 70)),
+})
+local TIER_RANK = { Common = 1, Rare = 2, Mythic = 3, Transcendent = 4 }
+
+local function tierColors(rarity)
+	local r = Config.Rarities and Config.Rarities[rarity]
+	local fb = FALLBACK[rarity] or FALLBACK.Common
+	return (r and r.Glow and r.Color) or fb[1], (r and r.Glow) or fb[2]
+end
+
+local function mk(class, p, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(p) do
+		inst[k] = v
+	end
+	inst.Parent = parent
+	return inst
+end
+local function tween(obj, t, goal, style, dir)
+	local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), goal)
+	tw:Play()
+	return tw
+end
+local function sound(name, volume, speed)
+	local s
+	if string.find(name, "://", 1, true) then
+		s = mk("Sound", { SoundId = name }, nil)
+	else
+		local t = soundsFolder and soundsFolder:FindFirstChild(name)
+		if not t then
+			return
+		end
+		s = t:Clone()
+		s.Looped = false
+	end
+	s.Volume = volume
+	s.PlaybackSpeed = speed or 1
+	s.Parent = SoundService
+	s:Play()
+	Debris:AddItem(s, 8)
+end
+local function label(parent, p)
+	local base = { BackgroundTransparency = 1, Font = Enum.Font.LuckiestGuy, TextScaled = true, TextColor3 = WHITE }
+	for k, v in pairs(p) do
+		if k ~= "Stroke" then
+			base[k] = v
+		end
+	end
+	local l = mk("TextLabel", base, parent)
+	mk("UIStroke", { Color = C3(10, 8, 20), Thickness = p.Stroke or 2.5 }, l)
+	return l
+end
+
+--------------------------------------------------------------------
+-- UI
+--------------------------------------------------------------------
+local gui = mk("ScreenGui", { Name = "RollReel", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 25, Enabled = false }, player:WaitForChild("PlayerGui"))
+local flash = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, BorderSizePixel = 0 }, gui)
+local holder = mk("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.36), Size = UDim2.fromOffset(700, 250), BackgroundTransparency = 1 }, gui)
+local holderScale = mk("UIScale", {}, holder)
+mk("UISizeConstraint", { MaxSize = Vector2.new(700, 250) }, holder)
+local title = label(holder, { Text = "🎲 ROLLING...", Size = UDim2.new(1, 0, 0, 40), Stroke = 3 })
+local subtitle = label(holder, { Text = "", Font = Enum.Font.GothamBlack, Position = UDim2.fromOffset(0, 40), Size = UDim2.new(1, 0, 0, 22), TextColor3 = C3(200, 210, 240) })
+
+local window = mk("Frame", { Position = UDim2.fromOffset(0, 70), Size = UDim2.new(1, 0, 0, CARD_H + 30), BackgroundColor3 = C3(16, 14, 30), BackgroundTransparency = 0.15, ClipsDescendants = true }, holder)
+mk("UICorner", { CornerRadius = UDim.new(0, 18) }, window)
+local windowStroke = mk("UIStroke", { Thickness = 4, Color = C3(90, 90, 140) }, window)
+mk("UIGradient", { Transparency = NumberSequence.new({ -- cards fade at the edges
+	NumberSequenceKeypoint.new(0, 0.6), NumberSequenceKeypoint.new(0.15, 0), NumberSequenceKeypoint.new(0.85, 0), NumberSequenceKeypoint.new(1, 0.6) }) }, window)
+local strip = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1 }, window)
+
+-- centre marker: two glowing arrows + a line
+local markerTop = label(holder, { Text = "▼", ZIndex = 5, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 0, 78), Size = UDim2.fromOffset(40, 30), TextColor3 = C3(255, 230, 90) })
+local markerBot = label(holder, { Text = "▲", ZIndex = 5, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 62 + CARD_H + 30), Size = UDim2.fromOffset(40, 30), TextColor3 = C3(255, 230, 90) })
+mk("Frame", { ZIndex = 4, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 0), Size = UDim2.new(0, 3, 1, 0), BackgroundColor3 = C3(255, 230, 90), BackgroundTransparency = 0.3, BorderSizePixel = 0 }, window)
+
+local function makeCard(def, i)
+	local rarity = def.Rarity or "Common"
+	local textColor, glow = tierColors(rarity)
+	local card = mk("Frame", { Size = UDim2.fromOffset(CARD_W, CARD_H), Position = UDim2.fromOffset(0, 15), BackgroundColor3 = WHITE }, strip)
+	mk("UICorner", { CornerRadius = UDim.new(0, 14) }, card)
+	local g = mk("UIGradient", { Rotation = 90, Color = ColorSequence.new(glow:Lerp(WHITE, 0.15), glow:Lerp(C3(0, 0, 0), 0.55)) }, card)
+	local stroke = mk("UIStroke", { Thickness = 3, Color = textColor }, card)
+	if rarity == "Transcendent" then
+		g.Color = RAINBOW
+		mk("UIGradient", { Color = RAINBOW }, stroke)
+	end
+	label(card, { Text = def.Emoji or "?", Font = Enum.Font.GothamBlack, Position = UDim2.fromScale(0.1, 0.06), Size = UDim2.fromScale(0.8, 0.44) })
+	label(card, { Text = string.upper(def.Name), TextColor3 = textColor, Position = UDim2.fromScale(0.05, 0.52), Size = UDim2.fromScale(0.9, 0.26), Stroke = 3 })
+	label(card, { Text = string.upper(rarity), Font = Enum.Font.GothamBlack, TextColor3 = textColor, Position = UDim2.fromScale(0.1, 0.8), Size = UDim2.fromScale(0.8, 0.14) })
+	return { frame = card, def = def, scale = mk("UIScale", {}, card), index = i }
+end
+
+--------------------------------------------------------------------
+-- spin state
+--------------------------------------------------------------------
+local cards = {}
+local offset = 0          -- px the strip has moved
+local mode = "idle"       -- idle | spin | land | done
+local land = nil          -- { from, to, t0, T, card }
+local lastTickIndex = 0
+local token = 0
+
+local function weightedPick()
+	-- show every tier now and then (square-root weights so rare ones flash by more often)
+	local total = 0
+	for _, d in ipairs(Config.Disasters) do
+		total += math.sqrt(math.max(d.Weight or 100, 0.0001))
+	end
+	local roll = math.random() * total
+	for _, d in ipairs(Config.Disasters) do
+		roll -= math.sqrt(math.max(d.Weight or 100, 0.0001))
+		if roll <= 0 then
+			return d
+		end
+	end
+	return Config.Disasters[1]
+end
+
+local function cardAt(i)
+	local c = cards[i]
+	if not c then
+		c = makeCard(weightedPick(), i)
+		cards[i] = c
+	end
+	return c
+end
+
+local function layout()
+	local width = window.AbsoluteSize.X
+	local centerX = width / 2 - CARD_W / 2
+	local first = math.floor((offset - width) / STEP)
+	local last = math.ceil((offset + width) / STEP)
+	for i = math.max(first, 1), last do
+		local c = cardAt(i)
+		c.frame.Position = UDim2.fromOffset(centerX + i * STEP - offset, 15)
+	end
+	for i, c in pairs(cards) do -- drop cards that slid far off the left
+		if i < first - 2 then
+			c.frame:Destroy()
+			cards[i] = nil
+		end
+	end
+end
+
+local function reset()
+	for _, c in pairs(cards) do
+		c.frame:Destroy()
+	end
+	cards = {}
+	offset = STEP -- card 1 in the middle
+	lastTickIndex = 1
+	land = nil
+end
+
+RunService.RenderStepped:Connect(function(dt)
+	if mode == "spin" then
+		offset += SPIN_SPEED * dt
+	elseif mode == "land" and land then
+		local a = math.clamp((os.clock() - land.t0) / land.T, 0, 1)
+		-- ease-out quint: starts at exactly SPIN_SPEED (T = 5 * distance / speed), ends at rest
+		offset = land.from + (land.to - land.from) * (1 - (1 - a) ^ 5)
+		if a >= 1 then
+			mode = "done"
+			land.onDone()
+		end
+	else
+		return
+	end
+	layout()
+	local idx = math.floor(offset / STEP + 0.5)
+	if idx ~= lastTickIndex then
+		lastTickIndex = idx
+		local speed = mode == "spin" and 1 or math.max(0.25, 1 - (os.clock() - land.t0) / land.T)
+		sound(TICK, 0.35 + 0.3 * speed, 0.8 + speed * 0.7)
+		markerTop.Position = UDim2.new(0.5, 0, 0, 74)
+		tween(markerTop, 0.08, { Position = UDim2.new(0.5, 0, 0, 78) })
+	end
+end)
+
+local function shake(amount, duration)
+	task.spawn(function()
+		local t0 = os.clock()
+		while os.clock() - t0 < duration do
+			local k = (1 - (os.clock() - t0) / duration) * amount
+			holder.Position = UDim2.new(0.5, math.random(-8, 8) * k, 0.36, math.random(-6, 6) * k)
+			if camera.CameraType == Enum.CameraType.Custom then
+				camera.CFrame *= CFrame.Angles(math.random(-10, 10) * 0.001 * k, math.random(-10, 10) * 0.001 * k, 0)
+			end
+			RunService.RenderStepped:Wait()
+		end
+		holder.Position = UDim2.fromScale(0.5, 0.36)
+	end)
+end
+
+local function celebrate(c, rarity, rollerName)
+	local rank = TIER_RANK[rarity] or 1
+	local textColor = tierColors(rarity)
+	c.scale.Scale = 1
+	tween(c.scale, 0.35, { Scale = 1.22 }, Enum.EasingStyle.Back)
+	title.Text = (rank >= 3 and "✨ " or "") .. string.upper(rarity) .. "!" .. (rank >= 3 and " ✨" or "")
+	title.TextColor3 = textColor
+	windowStroke.Color = textColor
+	local summoner = ReplicatedStorage:GetAttribute("SummonedBy")
+	subtitle.Text = summoner and ("🔮 Summoned by " .. summoner) or (rollerName and (rollerName .. " rolled " .. c.def.Name) or c.def.Name)
+
+	flash.BackgroundColor3 = textColor
+	flash.BackgroundTransparency = 1 - 0.15 * rank
+	tween(flash, 0.6 + rank * 0.2, { BackgroundTransparency = 1 })
+	holderScale.Scale = 1.06
+	tween(holderScale, 0.4, { Scale = 1 }, Enum.EasingStyle.Back)
+
+	if rank == 1 then
+		sound("Whoosh", 0.5, 1.4)
+		sound(TICK, 0.8, 0.6)
+	elseif rank == 2 then
+		sound("Fanfare", 0.6, 1)
+	elseif rank == 3 then
+		sound("Fanfare", 0.8, 0.95)
+		sound("Explosion", 0.4, 0.7)
+		shake(0.6, 0.5)
+	else
+		sound("Fanfare", 1, 0.85)
+		sound("Thunder", 0.9, 0.6)
+		sound("DragonRoar", 0.7, 0.5)
+		sound("Explosion", 0.7, 0.5)
+		shake(1.4, 1.2)
+	end
+	if rarity == "Transcendent" then -- rainbow sweep over the title + the card
+		local g = mk("UIGradient", { Color = RAINBOW }, title)
+		local t0 = os.clock()
+		task.spawn(function()
+			while g.Parent and os.clock() - t0 < 4 do
+				g.Offset = Vector2.new(((os.clock() - t0) * 0.8) % 2 - 1, 0)
+				RunService.RenderStepped:Wait()
+			end
+			g:Destroy()
+		end)
+	end
+end
+
+local function hide()
+	if not gui.Enabled then
+		return
+	end
+	local my = token
+	tween(holderScale, 0.3, { Scale = 0.6 }, Enum.EasingStyle.Back, Enum.EasingDirection.In).Completed:Once(function()
+		if token == my then
+			gui.Enabled = false
+			mode = "idle"
+		end
+	end)
+end
+
+--------------------------------------------------------------------
+-- remotes
+--------------------------------------------------------------------
+remotes:WaitForChild("RollStarted").OnClientEvent:Connect(function()
+	token += 1
+	reset()
+	title.Text = "🎲 ROLLING..."
+	title.TextColor3 = WHITE
+	subtitle.Text = ""
+	windowStroke.Color = C3(90, 90, 140)
+	gui.Enabled = true
+	holderScale.Scale = 0.6
+	tween(holderScale, 0.35, { Scale = 1 }, Enum.EasingStyle.Back)
+	sound("Whoosh", 0.7, 0.9)
+	mode = "spin"
+	layout()
+end)
+
+remotes:WaitForChild("DisasterRevealed").OnClientEvent:Connect(function(disasterId, rarityName, rollerName)
+	local def = Config.GetDisasterById(disasterId)
+	if not def then
+		return
+	end
+	if mode ~= "spin" then -- joined mid-roll: start the reel right here
+		token += 1
+		reset()
+		gui.Enabled = true
+		holderScale.Scale = 1
+		mode = "spin"
+		layout()
+	end
+	local rarity = rarityName or def.Rarity or "Common"
+	-- target: the card that is ~LAND_TIME of ease-out away, swapped for the real result
+	local distance = SPIN_SPEED * LAND_TIME / 5
+	local targetIndex = math.ceil((offset + distance) / STEP)
+	local old = cards[targetIndex]
+	if old then
+		old.frame:Destroy()
+	end
+	local c = makeCard(def, targetIndex)
+	cards[targetIndex] = c
+	local to = targetIndex * STEP
+	if (TIER_RANK[rarity] or 1) >= 2 then
+		sound("DrumRoll", 0.5, 1.3) -- anticipation while it slows down
+	end
+	mode = "land"
+	land = {
+		from = offset,
+		to = to,
+		t0 = os.clock(),
+		T = 5 * (to - offset) / SPIN_SPEED,
+		card = c,
+		onDone = function()
+			celebrate(c, rarity, rollerName)
+		end,
+	}
+end)
+
+remotes:WaitForChild("DisasterStarted").OnClientEvent:Connect(function()
+	task.delay(0.3, hide)
+end)
+remotes:WaitForChild("DisasterEnded").OnClientEvent:Connect(hide)
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX_SummonService"><Properties><string name="Name">SummonService</string><ProtectedString name="Source"><![CDATA[-- SummonService  (ModuleScript, child of the LobbyUpgrade script - server only)
+--
+-- Robux shop items handled by the add-on (ProgressionServer pays them out through its
+-- ServerStorage > ExtraProductHandlers hook, only after the receipt is saved):
+--   * Summon   - the buyer picks a disaster in the shop; the next roll lands on it.
+--                Summons queue up: one per round, in the order they were bought.
+--   * RobuxEgg - hatches one egg without spending coins (needs PetService's PetGrantHatch hook).
+-- DisasterGameManager takes the next summon through ServerStorage > TakeSummon.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local Summon = {}
+local queue = {}   -- { { id = disasterId, buyer = display name } }
+local pending = {} -- [Player] = disasterId they picked before buying
+local remote
+
+local function config()
+	local assets = ReplicatedStorage:FindFirstChild("DisasterAssets")
+	local mod = assets and assets:FindFirstChild("DisasterConfig")
+	return mod and require(mod)
+end
+
+local function publishQueue()
+	ReplicatedStorage:SetAttribute("SummonQueue", #queue)
+end
+
+local function bindable(parent, name, fn)
+	local b = parent:FindFirstChild(name) or Instance.new("BindableFunction")
+	b.Name = name
+	b.OnInvoke = fn
+	b.Parent = parent
+	return b
+end
+
+function Summon.init()
+	remote = ReplicatedStorage:FindFirstChild("SummonRemote") or Instance.new("RemoteEvent")
+	remote.Name = "SummonRemote"
+	remote.Parent = ReplicatedStorage
+
+	-- the client says which disaster it wants right before the Robux prompt
+	remote.OnServerEvent:Connect(function(player, action, id)
+		local cfg = config()
+		if action == "Choose" and type(id) == "string" and cfg and cfg.GetDisasterById(id) then
+			pending[player] = id
+		end
+	end)
+	Players.PlayerRemoving:Connect(function(player)
+		pending[player] = nil
+	end)
+
+	local handlers = ServerStorage:FindFirstChild("ExtraProductHandlers") or Instance.new("Folder")
+	handlers.Name = "ExtraProductHandlers"
+	handlers.Parent = ServerStorage
+
+	bindable(handlers, "Summon", function(player, product)
+		local cfg = config()
+		if not cfg then
+			return nil
+		end
+		local def = pending[player] and cfg.GetDisasterById(pending[player])
+		if not def or def.Rarity ~= product.Rarity then
+			-- picked something of another tier (or nothing): a random disaster of the bought tier
+			local tier = {}
+			for _, d in ipairs(cfg.Disasters) do
+				if d.Rarity == product.Rarity then
+					table.insert(tier, d)
+				end
+			end
+			def = tier[math.random(1, math.max(#tier, 1))]
+		end
+		if not def then
+			return nil
+		end
+		pending[player] = nil
+		table.insert(queue, { id = def.Id, buyer = player.DisplayName })
+		publishQueue()
+		remote:FireAllClients("Queued", def.Id, player.DisplayName, #queue)
+		return ("🔮 %s summoned! It is #%d in line."):format(def.Name, #queue)
+	end)
+
+	bindable(handlers, "RobuxEgg", function(player, product)
+		local grant = ServerStorage:FindFirstChild("PetGrantHatch")
+		local res = grant and grant:Invoke(player, product.Egg)
+		if res and res.ok then
+			remote:FireClient(player, "Hatched", product.Egg, res)
+			return nil
+		end
+		-- PetService isn't patched or the hatch failed: never lose a Robux purchase - pay the egg's coin price
+		warn("[SummonService] Robux egg could not hatch (" .. tostring(res and res.err or "no PetGrantHatch") .. ") - paying coins instead")
+		local api = ServerStorage:FindFirstChild("ProgressionAPI")
+		local petConfig = ReplicatedStorage:FindFirstChild("PetConfig")
+		local egg = petConfig and require(petConfig).GetEgg(product.Egg)
+		if api and egg then
+			api:Invoke("AddCoinsRaw", player, egg.Cost)
+			return ("Couldn't hatch right now - you got 🪙 %d instead"):format(egg.Cost)
+		end
+		return nil
+	end)
+
+	-- DisasterGameManager asks for the next summoned disaster before rolling
+	bindable(ServerStorage, "TakeSummon", function()
+		local nextOne = table.remove(queue, 1)
+		publishQueue()
+		ReplicatedStorage:SetAttribute("SummonedBy", nextOne and nextOne.buyer or nil)
+		return nextOne and nextOne.id or nil
+	end)
+	publishQueue()
+end
+
+return Summon
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_BlenderAnimator"><Properties><string name="Name">BlenderAnimator</string><bool name="Disabled">false</bool><token name="RunContext">2</token><ProtectedString name="Source"><![CDATA[-- BlenderAnimator  (Script with RunContext = Client, child of the LobbyUpgrade script)
+--
+-- LobbyUpgrade moves this into ReplicatedStorage so it runs on every player's device.
+-- Plays the walk / run / swim cycles keyframed in Blender (blender_animations.py -> BlenderAnims)
+-- on every R15 character nearby, by setting each Motor6D.Transform right after Roblox's own
+-- animations run - so no animation upload is needed. Animating everyone (not only yourself) is
+-- deliberate: Transform changes made on one device are not sent to other players.
+--   * walk blends into run as the character speeds up; the cycle speed follows the real speed,
+--     so feet don't slide
+--   * swim takes over in the water (same water band as SwimController, off while WaterDrained)
+--   * idle / jump / fall / climb stay on the normal Roblox animations, with smooth blends in and out
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local ENABLED = true
+local MAX_DISTANCE = 250   -- don't animate characters further than this from the camera
+local WALK_STRIDE = 13     -- studs travelled per walk cycle
+local RUN_STRIDE = 18      -- studs travelled per run cycle
+local RUN_FROM, RUN_TO = 12, 20 -- speeds where walk blends into run
+local WATER_TOP_Y, WATER_BOTTOM_Y = 0, -6 -- must match SwimController
+local BLEND_RATE = 10      -- how fast the cycles fade in / out
+
+if not ENABLED then
+	return
+end
+
+local data = require(ReplicatedStorage:WaitForChild("BlenderAnims"))
+local camera = workspace.CurrentCamera
+local clips = data.clips
+local rigs = {}
+
+local function register(character)
+	local humanoid = character:WaitForChild("Humanoid", 10)
+	local hrp = character:WaitForChild("HumanoidRootPart", 10)
+	if not humanoid or not hrp or humanoid.RigType ~= Enum.HumanoidRigType.R15 then
+		return -- R6 characters keep their normal animations
+	end
+	character:WaitForChild("UpperTorso", 10)
+	local motors = {}
+	for _, d in ipairs(character:GetDescendants()) do
+		if d:IsA("Motor6D") then
+			motors[d.Name] = d
+		end
+	end
+	rigs[character] = { humanoid = humanoid, hrp = hrp, motors = motors, phase = 0, swimPhase = 0, wLoco = 0, wSwim = 0, runMix = 0 }
+	character.Destroying:Once(function()
+		rigs[character] = nil
+	end)
+end
+
+local function hook(player)
+	player.CharacterAdded:Connect(register)
+	if player.Character then
+		task.spawn(register, player.Character)
+	end
+end
+Players.PlayerAdded:Connect(hook)
+for _, p in ipairs(Players:GetPlayers()) do
+	hook(p)
+end
+
+-- angle difference the short way round (the swim arms spin continuously)
+local function wrap(d)
+	if d > math.pi then
+		return d - 2 * math.pi
+	elseif d < -math.pi then
+		return d + 2 * math.pi
+	end
+	return d
+end
+
+local function sample(clip, joint, phase)
+	local frames = clip.joints[joint]
+	if not frames then
+		return 0, 0, 0
+	end
+	local n = #frames
+	local f = phase * n
+	local i = math.floor(f) % n + 1
+	local j = i % n + 1
+	local a = f - math.floor(f)
+	local p, q = frames[i], frames[j]
+	return p[1] + wrap(q[1] - p[1]) * a, p[2] + wrap(q[2] - p[2]) * a, p[3] + wrap(q[3] - p[3]) * a
+end
+
+local function sampleY(clip, phase)
+	local ys = clip.rootY
+	local n = #ys
+	local f = phase * n
+	local i = math.floor(f) % n + 1
+	return ys[i] + (ys[i % n + 1] - ys[i]) * (f - math.floor(f))
+end
+
+local GROUNDED = {
+	[Enum.HumanoidStateType.Running] = true,
+	[Enum.HumanoidStateType.RunningNoPhysics] = true,
+	[Enum.HumanoidStateType.Landed] = true,
+}
+
+RunService.Stepped:Connect(function(_, dt)
+	local camPos = camera.CFrame.Position
+	local drained = workspace:GetAttribute("WaterDrained") == true
+	for character, r in pairs(rigs) do
+		local hrp, humanoid = r.hrp, r.humanoid
+		if not character.Parent or not hrp.Parent or humanoid.Health <= 0 then
+			continue
+		end
+		if (hrp.Position - camPos).Magnitude > MAX_DISTANCE then
+			continue
+		end
+		local v = hrp.AssemblyLinearVelocity
+		local speed = Vector3.new(v.X, 0, v.Z).Magnitude
+		local y = hrp.Position.Y
+		local swimming = character:GetAttribute("Swimming") == true
+			or (not drained and y < WATER_TOP_Y and y > WATER_BOTTOM_Y and humanoid.FloorMaterial == Enum.Material.Air)
+		local grounded = GROUNDED[humanoid:GetState()] == true and humanoid.FloorMaterial ~= Enum.Material.Air
+
+		local k = math.min(1, dt * BLEND_RATE)
+		r.wLoco += (((not swimming and grounded and speed > 0.8) and 1 or 0) - r.wLoco) * k
+		r.wSwim += ((swimming and 1 or 0) - r.wSwim) * k
+		r.runMix += (math.clamp((speed - RUN_FROM) / (RUN_TO - RUN_FROM), 0, 1) - r.runMix) * k
+		local stride = WALK_STRIDE + (RUN_STRIDE - WALK_STRIDE) * r.runMix
+		r.phase = (r.phase + dt * speed / stride) % 1
+		r.swimPhase = (r.swimPhase + dt / clips.swim.length * math.clamp(speed / 10, 0.6, 1.4)) % 1
+		if r.wLoco < 0.005 and r.wSwim < 0.005 then
+			continue
+		end
+
+		local ph, sph, mix = r.phase, r.swimPhase, r.runMix
+		local locoY = sampleY(clips.walk, ph) * (1 - mix) + sampleY(clips.run, ph) * mix
+		local swimY = sampleY(clips.swim, sph)
+		for name, motor in pairs(r.motors) do
+			if clips.walk.joints[name] or clips.swim.joints[name] then
+				local wx, wy, wz = sample(clips.walk, name, ph)
+				local rx, ry, rz = sample(clips.run, name, ph)
+				local loco = CFrame.Angles(wx + (rx - wx) * mix, wy + (ry - wy) * mix, wz + (rz - wz) * mix)
+				local swim = CFrame.Angles(sample(clips.swim, name, sph))
+				if name == "Root" then
+					loco = CFrame.new(0, locoY, 0) * loco
+					swim = CFrame.new(0, swimY, 0) * swim
+				end
+				local t = motor.Transform
+				if r.wLoco > 0.005 then
+					t = t:Lerp(loco, r.wLoco)
+				end
+				if r.wSwim > 0.005 then
+					t = t:Lerp(swim, r.wSwim)
+				end
+				motor.Transform = t
+			end
+		end
+	end
+end)
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX_BlenderAnims"><Properties><string name="Name">BlenderAnims</string><ProtectedString name="Source"><![CDATA[-- BlenderAnims  (ModuleScript, child of the LobbyUpgrade script)
+-- GENERATED by blender_animations.py - keyframed in Blender, sampled 32 times per loop.
+-- joints[name][i] = { x, y, z } for CFrame.Angles; rootY[i] = hip height offset (studs).
+return {
+	samples = 32,
+	clips = {
+		walk = {
+			length = 1.00,
+			rootY = { -0.060, -0.095, -0.120, -0.135, -0.140, -0.116, -0.061, -0.001, 0.040, 0.057, 0.066, 0.070, 0.070, 0.057, 0.025, -0.018, -0.060, -0.095, -0.120, -0.135, -0.140, -0.116, -0.061, -0.001, 0.040, 0.057, 0.066, 0.070, 0.070, 0.057, 0.025, -0.018 },
+			joints = {
+				Root = { {0.000, 0.000, 0.020}, {0.000, 0.000, 0.024}, {0.000, 0.000, 0.027}, {0.000, 0.000, 0.029}, {0.000, 0.000, 0.030}, {0.000, 0.000, 0.027}, {0.000, 0.000, 0.019}, {0.000, 0.000, 0.009}, {0.000, 0.000, 0.000}, {0.000, 0.000, -0.005}, {0.000, 0.000, -0.008}, {0.000, 0.000, -0.009}, {0.000, 0.000, -0.010}, {0.000, 0.000, -0.012}, {0.000, 0.000, -0.014}, {0.000, 0.000, -0.017}, {0.000, 0.000, -0.020}, {0.000, 0.000, -0.024}, {0.000, 0.000, -0.027}, {0.000, 0.000, -0.029}, {0.000, 0.000, -0.030}, {0.000, 0.000, -0.027}, {0.000, 0.000, -0.019}, {0.000, 0.000, -0.009}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.005}, {0.000, 0.000, 0.008}, {0.000, 0.000, 0.009}, {0.000, 0.000, 0.010}, {0.000, 0.000, 0.012}, {0.000, 0.000, 0.014}, {0.000, 0.000, 0.017} },
+				Waist = { {-0.040, 0.070, 0.000}, {-0.040, 0.069, 0.000}, {-0.040, 0.065, 0.000}, {-0.040, 0.059, 0.000}, {-0.040, 0.050, 0.000}, {-0.040, 0.039, 0.000}, {-0.040, 0.026, 0.000}, {-0.040, 0.013, 0.000}, {-0.040, 0.000, 0.000}, {-0.040, -0.011, 0.000}, {-0.040, -0.021, 0.000}, {-0.040, -0.030, 0.000}, {-0.040, -0.040, 0.000}, {-0.040, -0.050, 0.000}, {-0.040, -0.060, 0.000}, {-0.040, -0.067, 0.000}, {-0.040, -0.070, 0.000}, {-0.040, -0.069, 0.000}, {-0.040, -0.065, 0.000}, {-0.040, -0.059, 0.000}, {-0.040, -0.050, 0.000}, {-0.040, -0.039, 0.000}, {-0.040, -0.026, 0.000}, {-0.040, -0.013, 0.000}, {-0.040, 0.000, 0.000}, {-0.040, 0.011, 0.000}, {-0.040, 0.021, 0.000}, {-0.040, 0.030, 0.000}, {-0.040, 0.040, 0.000}, {-0.040, 0.050, 0.000}, {-0.040, 0.060, 0.000}, {-0.040, 0.067, 0.000} },
+				Neck = { {0.020, -0.030, 0.000}, {0.020, -0.029, 0.000}, {0.020, -0.027, 0.000}, {0.020, -0.024, 0.000}, {0.020, -0.020, 0.000}, {0.020, -0.015, 0.000}, {0.020, -0.011, 0.000}, {0.020, -0.005, 0.000}, {0.020, 0.000, 0.000}, {0.020, 0.005, 0.000}, {0.020, 0.011, 0.000}, {0.020, 0.015, 0.000}, {0.020, 0.020, 0.000}, {0.020, 0.024, 0.000}, {0.020, 0.027, 0.000}, {0.020, 0.029, 0.000}, {0.020, 0.030, 0.000}, {0.020, 0.029, 0.000}, {0.020, 0.027, 0.000}, {0.020, 0.024, 0.000}, {0.020, 0.020, 0.000}, {0.020, 0.015, 0.000}, {0.020, 0.011, 0.000}, {0.020, 0.005, 0.000}, {0.020, 0.000, 0.000}, {0.020, -0.005, 0.000}, {0.020, -0.011, 0.000}, {0.020, -0.015, 0.000}, {0.020, -0.020, 0.000}, {0.020, -0.024, 0.000}, {0.020, -0.027, 0.000}, {0.020, -0.029, 0.000} },
+				LeftShoulder = { {0.320, 0.000, 0.000}, {0.313, 0.000, 0.000}, {0.293, 0.000, 0.000}, {0.262, 0.000, 0.000}, {0.220, 0.000, 0.000}, {0.170, 0.000, 0.000}, {0.115, 0.000, 0.000}, {0.057, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.054, 0.000, 0.000}, {-0.105, 0.000, 0.000}, {-0.153, 0.000, 0.000}, {-0.200, 0.000, 0.000}, {-0.245, 0.000, 0.000}, {-0.283, 0.000, 0.000}, {-0.310, 0.000, 0.000}, {-0.320, 0.000, 0.000}, {-0.313, 0.000, 0.000}, {-0.293, 0.000, 0.000}, {-0.262, 0.000, 0.000}, {-0.220, 0.000, 0.000}, {-0.170, 0.000, 0.000}, {-0.115, 0.000, 0.000}, {-0.057, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.054, 0.000, 0.000}, {0.105, 0.000, 0.000}, {0.153, 0.000, 0.000}, {0.200, 0.000, 0.000}, {0.245, 0.000, 0.000}, {0.283, 0.000, 0.000}, {0.310, 0.000, 0.000} },
+				RightShoulder = { {-0.320, 0.000, 0.000}, {-0.313, 0.000, 0.000}, {-0.293, 0.000, 0.000}, {-0.262, 0.000, 0.000}, {-0.220, 0.000, 0.000}, {-0.170, 0.000, 0.000}, {-0.115, 0.000, 0.000}, {-0.057, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.054, 0.000, 0.000}, {0.105, 0.000, 0.000}, {0.153, 0.000, 0.000}, {0.200, 0.000, 0.000}, {0.245, 0.000, 0.000}, {0.283, 0.000, 0.000}, {0.310, 0.000, 0.000}, {0.320, 0.000, 0.000}, {0.313, 0.000, 0.000}, {0.293, 0.000, 0.000}, {0.262, 0.000, 0.000}, {0.220, 0.000, 0.000}, {0.170, 0.000, 0.000}, {0.115, 0.000, 0.000}, {0.057, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.054, 0.000, 0.000}, {-0.105, 0.000, 0.000}, {-0.153, 0.000, 0.000}, {-0.200, 0.000, 0.000}, {-0.245, 0.000, 0.000}, {-0.283, 0.000, 0.000}, {-0.310, 0.000, 0.000} },
+				LeftElbow = { {0.350, 0.000, 0.000}, {0.346, 0.000, 0.000}, {0.334, 0.000, 0.000}, {0.318, 0.000, 0.000}, {0.300, 0.000, 0.000}, {0.282, 0.000, 0.000}, {0.266, 0.000, 0.000}, {0.254, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.254, 0.000, 0.000}, {0.266, 0.000, 0.000}, {0.282, 0.000, 0.000}, {0.300, 0.000, 0.000}, {0.318, 0.000, 0.000}, {0.334, 0.000, 0.000}, {0.346, 0.000, 0.000} },
+				RightElbow = { {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.254, 0.000, 0.000}, {0.266, 0.000, 0.000}, {0.282, 0.000, 0.000}, {0.300, 0.000, 0.000}, {0.318, 0.000, 0.000}, {0.334, 0.000, 0.000}, {0.346, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.346, 0.000, 0.000}, {0.334, 0.000, 0.000}, {0.318, 0.000, 0.000}, {0.300, 0.000, 0.000}, {0.282, 0.000, 0.000}, {0.266, 0.000, 0.000}, {0.254, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.250, 0.000, 0.000} },
+				LeftHip = { {-0.380, 0.000, 0.000}, {-0.378, 0.000, 0.000}, {-0.366, 0.000, 0.000}, {-0.336, 0.000, 0.000}, {-0.280, 0.000, 0.000}, {-0.193, 0.000, 0.000}, {-0.087, 0.000, 0.000}, {0.023, 0.000, 0.000}, {0.120, 0.000, 0.000}, {0.193, 0.000, 0.000}, {0.245, 0.000, 0.000}, {0.285, 0.000, 0.000}, {0.320, 0.000, 0.000}, {0.355, 0.000, 0.000}, {0.387, 0.000, 0.000}, {0.411, 0.000, 0.000}, {0.420, 0.000, 0.000}, {0.409, 0.000, 0.000}, {0.379, 0.000, 0.000}, {0.335, 0.000, 0.000}, {0.280, 0.000, 0.000}, {0.218, 0.000, 0.000}, {0.153, 0.000, 0.000}, {0.086, 0.000, 0.000}, {0.020, 0.000, 0.000}, {-0.043, 0.000, 0.000}, {-0.103, 0.000, 0.000}, {-0.161, 0.000, 0.000}, {-0.220, 0.000, 0.000}, {-0.278, 0.000, 0.000}, {-0.329, 0.000, 0.000}, {-0.366, 0.000, 0.000} },
+				RightHip = { {0.420, 0.000, 0.000}, {0.409, 0.000, 0.000}, {0.379, 0.000, 0.000}, {0.335, 0.000, 0.000}, {0.280, 0.000, 0.000}, {0.218, 0.000, 0.000}, {0.153, 0.000, 0.000}, {0.086, 0.000, 0.000}, {0.020, 0.000, 0.000}, {-0.043, 0.000, 0.000}, {-0.103, 0.000, 0.000}, {-0.161, 0.000, 0.000}, {-0.220, 0.000, 0.000}, {-0.278, 0.000, 0.000}, {-0.329, 0.000, 0.000}, {-0.366, 0.000, 0.000}, {-0.380, 0.000, 0.000}, {-0.378, 0.000, 0.000}, {-0.366, 0.000, 0.000}, {-0.336, 0.000, 0.000}, {-0.280, 0.000, 0.000}, {-0.193, 0.000, 0.000}, {-0.087, 0.000, 0.000}, {0.023, 0.000, 0.000}, {0.120, 0.000, 0.000}, {0.193, 0.000, 0.000}, {0.245, 0.000, 0.000}, {0.285, 0.000, 0.000}, {0.320, 0.000, 0.000}, {0.355, 0.000, 0.000}, {0.387, 0.000, 0.000}, {0.411, 0.000, 0.000} },
+				LeftKnee = { {-0.280, 0.000, 0.000}, {-0.339, 0.000, 0.000}, {-0.394, 0.000, 0.000}, {-0.459, 0.000, 0.000}, {-0.550, 0.000, 0.000}, {-0.674, 0.000, 0.000}, {-0.804, 0.000, 0.000}, {-0.908, 0.000, 0.000}, {-0.950, 0.000, 0.000}, {-0.903, 0.000, 0.000}, {-0.783, 0.000, 0.000}, {-0.622, 0.000, 0.000}, {-0.450, 0.000, 0.000}, {-0.295, 0.000, 0.000}, {-0.172, 0.000, 0.000}, {-0.090, 0.000, 0.000}, {-0.060, 0.000, 0.000}, {-0.094, 0.000, 0.000}, {-0.170, 0.000, 0.000}, {-0.246, 0.000, 0.000}, {-0.280, 0.000, 0.000}, {-0.263, 0.000, 0.000}, {-0.222, 0.000, 0.000}, {-0.169, 0.000, 0.000}, {-0.120, 0.000, 0.000}, {-0.085, 0.000, 0.000}, {-0.063, 0.000, 0.000}, {-0.053, 0.000, 0.000}, {-0.050, 0.000, 0.000}, {-0.073, 0.000, 0.000}, {-0.132, 0.000, 0.000}, {-0.207, 0.000, 0.000} },
+				RightKnee = { {-0.060, 0.000, 0.000}, {-0.094, 0.000, 0.000}, {-0.170, 0.000, 0.000}, {-0.246, 0.000, 0.000}, {-0.280, 0.000, 0.000}, {-0.263, 0.000, 0.000}, {-0.222, 0.000, 0.000}, {-0.169, 0.000, 0.000}, {-0.120, 0.000, 0.000}, {-0.085, 0.000, 0.000}, {-0.063, 0.000, 0.000}, {-0.053, 0.000, 0.000}, {-0.050, 0.000, 0.000}, {-0.073, 0.000, 0.000}, {-0.132, 0.000, 0.000}, {-0.207, 0.000, 0.000}, {-0.280, 0.000, 0.000}, {-0.339, 0.000, 0.000}, {-0.394, 0.000, 0.000}, {-0.459, 0.000, 0.000}, {-0.550, 0.000, 0.000}, {-0.674, 0.000, 0.000}, {-0.804, 0.000, 0.000}, {-0.908, 0.000, 0.000}, {-0.950, 0.000, 0.000}, {-0.903, 0.000, 0.000}, {-0.783, 0.000, 0.000}, {-0.622, 0.000, 0.000}, {-0.450, 0.000, 0.000}, {-0.295, 0.000, 0.000}, {-0.172, 0.000, 0.000}, {-0.090, 0.000, 0.000} },
+				LeftAnkle = { {-0.250, 0.000, 0.000}, {-0.237, 0.000, 0.000}, {-0.203, 0.000, 0.000}, {-0.154, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {-0.046, 0.000, 0.000}, {0.006, 0.000, 0.000}, {0.055, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.140, 0.000, 0.000}, {0.171, 0.000, 0.000}, {0.192, 0.000, 0.000}, {0.200, 0.000, 0.000}, {0.191, 0.000, 0.000}, {0.169, 0.000, 0.000}, {0.137, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.063, 0.000, 0.000}, {0.031, 0.000, 0.000}, {0.009, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.007, 0.000, 0.000}, {-0.027, 0.000, 0.000}, {-0.058, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {-0.150, 0.000, 0.000}, {-0.198, 0.000, 0.000}, {-0.235, 0.000, 0.000} },
+				RightAnkle = { {0.100, 0.000, 0.000}, {0.063, 0.000, 0.000}, {0.031, 0.000, 0.000}, {0.009, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.007, 0.000, 0.000}, {-0.027, 0.000, 0.000}, {-0.058, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {-0.150, 0.000, 0.000}, {-0.198, 0.000, 0.000}, {-0.235, 0.000, 0.000}, {-0.250, 0.000, 0.000}, {-0.237, 0.000, 0.000}, {-0.203, 0.000, 0.000}, {-0.154, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {-0.046, 0.000, 0.000}, {0.006, 0.000, 0.000}, {0.055, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.140, 0.000, 0.000}, {0.171, 0.000, 0.000}, {0.192, 0.000, 0.000}, {0.200, 0.000, 0.000}, {0.191, 0.000, 0.000}, {0.169, 0.000, 0.000}, {0.137, 0.000, 0.000} },
+			},
+		},
+		run = {
+			length = 0.66,
+			rootY = { -0.100, -0.181, -0.237, -0.269, -0.280, -0.246, -0.162, -0.054, 0.050, 0.129, 0.182, 0.211, 0.220, 0.188, 0.107, 0.003, -0.100, -0.181, -0.237, -0.269, -0.280, -0.246, -0.162, -0.054, 0.050, 0.129, 0.182, 0.211, 0.220, 0.188, 0.107, 0.003 },
+			joints = {
+				Root = { {-0.060, 0.000, 0.030}, {-0.060, 0.000, 0.032}, {-0.060, 0.000, 0.035}, {-0.060, 0.000, 0.038}, {-0.060, 0.000, 0.040}, {-0.060, 0.000, 0.036}, {-0.060, 0.000, 0.027}, {-0.060, 0.000, 0.014}, {-0.060, 0.000, 0.000}, {-0.060, 0.000, -0.012}, {-0.060, 0.000, -0.022}, {-0.060, 0.000, -0.028}, {-0.060, 0.000, -0.030}, {-0.060, 0.000, -0.030}, {-0.060, 0.000, -0.030}, {-0.060, 0.000, -0.030}, {-0.060, 0.000, -0.030}, {-0.060, 0.000, -0.032}, {-0.060, 0.000, -0.035}, {-0.060, 0.000, -0.038}, {-0.060, 0.000, -0.040}, {-0.060, 0.000, -0.036}, {-0.060, 0.000, -0.027}, {-0.060, 0.000, -0.014}, {-0.060, 0.000, 0.000}, {-0.060, 0.000, 0.012}, {-0.060, 0.000, 0.022}, {-0.060, 0.000, 0.028}, {-0.060, 0.000, 0.030}, {-0.060, 0.000, 0.030}, {-0.060, 0.000, 0.030}, {-0.060, 0.000, 0.030} },
+				Waist = { {-0.200, 0.150, 0.000}, {-0.200, 0.146, 0.000}, {-0.200, 0.136, 0.000}, {-0.200, 0.120, 0.000}, {-0.200, 0.100, 0.000}, {-0.200, 0.077, 0.000}, {-0.200, 0.053, 0.000}, {-0.200, 0.027, 0.000}, {-0.200, 0.000, 0.000}, {-0.200, -0.027, 0.000}, {-0.200, -0.053, 0.000}, {-0.200, -0.077, 0.000}, {-0.200, -0.100, 0.000}, {-0.200, -0.120, 0.000}, {-0.200, -0.136, 0.000}, {-0.200, -0.146, 0.000}, {-0.200, -0.150, 0.000}, {-0.200, -0.146, 0.000}, {-0.200, -0.136, 0.000}, {-0.200, -0.120, 0.000}, {-0.200, -0.100, 0.000}, {-0.200, -0.077, 0.000}, {-0.200, -0.053, 0.000}, {-0.200, -0.027, 0.000}, {-0.200, 0.000, 0.000}, {-0.200, 0.027, 0.000}, {-0.200, 0.053, 0.000}, {-0.200, 0.077, 0.000}, {-0.200, 0.100, 0.000}, {-0.200, 0.120, 0.000}, {-0.200, 0.136, 0.000}, {-0.200, 0.146, 0.000} },
+				Neck = { {0.140, -0.080, 0.000}, {0.140, -0.078, 0.000}, {0.140, -0.071, 0.000}, {0.140, -0.061, 0.000}, {0.140, -0.050, 0.000}, {0.140, -0.038, 0.000}, {0.140, -0.026, 0.000}, {0.140, -0.013, 0.000}, {0.140, 0.000, 0.000}, {0.140, 0.013, 0.000}, {0.140, 0.026, 0.000}, {0.140, 0.038, 0.000}, {0.140, 0.050, 0.000}, {0.140, 0.061, 0.000}, {0.140, 0.071, 0.000}, {0.140, 0.078, 0.000}, {0.140, 0.080, 0.000}, {0.140, 0.078, 0.000}, {0.140, 0.071, 0.000}, {0.140, 0.061, 0.000}, {0.140, 0.050, 0.000}, {0.140, 0.038, 0.000}, {0.140, 0.026, 0.000}, {0.140, 0.013, 0.000}, {0.140, 0.000, 0.000}, {0.140, -0.013, 0.000}, {0.140, -0.026, 0.000}, {0.140, -0.038, 0.000}, {0.140, -0.050, 0.000}, {0.140, -0.061, 0.000}, {0.140, -0.071, 0.000}, {0.140, -0.078, 0.000} },
+				LeftShoulder = { {0.850, 0.000, 0.000}, {0.821, 0.000, 0.000}, {0.743, 0.000, 0.000}, {0.632, 0.000, 0.000}, {0.500, 0.000, 0.000}, {0.361, 0.000, 0.000}, {0.215, 0.000, 0.000}, {0.062, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {-0.269, 0.000, 0.000}, {-0.433, 0.000, 0.000}, {-0.582, 0.000, 0.000}, {-0.700, 0.000, 0.000}, {-0.779, 0.000, 0.000}, {-0.825, 0.000, 0.000}, {-0.845, 0.000, 0.000}, {-0.850, 0.000, 0.000}, {-0.821, 0.000, 0.000}, {-0.743, 0.000, 0.000}, {-0.632, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.361, 0.000, 0.000}, {-0.215, 0.000, 0.000}, {-0.062, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.269, 0.000, 0.000}, {0.433, 0.000, 0.000}, {0.582, 0.000, 0.000}, {0.700, 0.000, 0.000}, {0.779, 0.000, 0.000}, {0.825, 0.000, 0.000}, {0.845, 0.000, 0.000} },
+				RightShoulder = { {-0.850, 0.000, 0.000}, {-0.821, 0.000, 0.000}, {-0.743, 0.000, 0.000}, {-0.632, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.361, 0.000, 0.000}, {-0.215, 0.000, 0.000}, {-0.062, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.269, 0.000, 0.000}, {0.433, 0.000, 0.000}, {0.582, 0.000, 0.000}, {0.700, 0.000, 0.000}, {0.779, 0.000, 0.000}, {0.825, 0.000, 0.000}, {0.845, 0.000, 0.000}, {0.850, 0.000, 0.000}, {0.821, 0.000, 0.000}, {0.743, 0.000, 0.000}, {0.632, 0.000, 0.000}, {0.500, 0.000, 0.000}, {0.361, 0.000, 0.000}, {0.215, 0.000, 0.000}, {0.062, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {-0.269, 0.000, 0.000}, {-0.433, 0.000, 0.000}, {-0.582, 0.000, 0.000}, {-0.700, 0.000, 0.000}, {-0.779, 0.000, 0.000}, {-0.825, 0.000, 0.000}, {-0.845, 0.000, 0.000} },
+				LeftElbow = { {1.300, 0.000, 0.000}, {1.292, 0.000, 0.000}, {1.275, 0.000, 0.000}, {1.258, 0.000, 0.000}, {1.250, 0.000, 0.000}, {1.254, 0.000, 0.000}, {1.266, 0.000, 0.000}, {1.282, 0.000, 0.000}, {1.300, 0.000, 0.000}, {1.318, 0.000, 0.000}, {1.334, 0.000, 0.000}, {1.346, 0.000, 0.000}, {1.350, 0.000, 0.000}, {1.342, 0.000, 0.000}, {1.325, 0.000, 0.000}, {1.308, 0.000, 0.000}, {1.300, 0.000, 0.000}, {1.308, 0.000, 0.000}, {1.325, 0.000, 0.000}, {1.342, 0.000, 0.000}, {1.350, 0.000, 0.000}, {1.346, 0.000, 0.000}, {1.334, 0.000, 0.000}, {1.318, 0.000, 0.000}, {1.300, 0.000, 0.000}, {1.282, 0.000, 0.000}, {1.266, 0.000, 0.000}, {1.254, 0.000, 0.000}, {1.250, 0.000, 0.000}, {1.258, 0.000, 0.000}, {1.275, 0.000, 0.000}, {1.292, 0.000, 0.000} },
+				RightElbow = { {1.300, 0.000, 0.000}, {1.308, 0.000, 0.000}, {1.325, 0.000, 0.000}, {1.342, 0.000, 0.000}, {1.350, 0.000, 0.000}, {1.346, 0.000, 0.000}, {1.334, 0.000, 0.000}, {1.318, 0.000, 0.000}, {1.300, 0.000, 0.000}, {1.282, 0.000, 0.000}, {1.266, 0.000, 0.000}, {1.254, 0.000, 0.000}, {1.250, 0.000, 0.000}, {1.258, 0.000, 0.000}, {1.275, 0.000, 0.000}, {1.292, 0.000, 0.000}, {1.300, 0.000, 0.000}, {1.292, 0.000, 0.000}, {1.275, 0.000, 0.000}, {1.258, 0.000, 0.000}, {1.250, 0.000, 0.000}, {1.254, 0.000, 0.000}, {1.266, 0.000, 0.000}, {1.282, 0.000, 0.000}, {1.300, 0.000, 0.000}, {1.318, 0.000, 0.000}, {1.334, 0.000, 0.000}, {1.346, 0.000, 0.000}, {1.350, 0.000, 0.000}, {1.342, 0.000, 0.000}, {1.325, 0.000, 0.000}, {1.308, 0.000, 0.000} },
+				LeftHip = { {-0.550, 0.000, 0.000}, {-0.547, 0.000, 0.000}, {-0.525, 0.000, 0.000}, {-0.466, 0.000, 0.000}, {-0.350, 0.000, 0.000}, {-0.160, 0.000, 0.000}, {0.081, 0.000, 0.000}, {0.332, 0.000, 0.000}, {0.550, 0.000, 0.000}, {0.702, 0.000, 0.000}, {0.794, 0.000, 0.000}, {0.838, 0.000, 0.000}, {0.850, 0.000, 0.000}, {0.849, 0.000, 0.000}, {0.844, 0.000, 0.000}, {0.829, 0.000, 0.000}, {0.800, 0.000, 0.000}, {0.747, 0.000, 0.000}, {0.666, 0.000, 0.000}, {0.565, 0.000, 0.000}, {0.450, 0.000, 0.000}, {0.328, 0.000, 0.000}, {0.202, 0.000, 0.000}, {0.075, 0.000, 0.000}, {-0.050, 0.000, 0.000}, {-0.170, 0.000, 0.000}, {-0.280, 0.000, 0.000}, {-0.375, 0.000, 0.000}, {-0.450, 0.000, 0.000}, {-0.501, 0.000, 0.000}, {-0.531, 0.000, 0.000}, {-0.546, 0.000, 0.000} },
+				RightHip = { {0.800, 0.000, 0.000}, {0.747, 0.000, 0.000}, {0.666, 0.000, 0.000}, {0.565, 0.000, 0.000}, {0.450, 0.000, 0.000}, {0.328, 0.000, 0.000}, {0.202, 0.000, 0.000}, {0.075, 0.000, 0.000}, {-0.050, 0.000, 0.000}, {-0.170, 0.000, 0.000}, {-0.280, 0.000, 0.000}, {-0.375, 0.000, 0.000}, {-0.450, 0.000, 0.000}, {-0.501, 0.000, 0.000}, {-0.531, 0.000, 0.000}, {-0.546, 0.000, 0.000}, {-0.550, 0.000, 0.000}, {-0.547, 0.000, 0.000}, {-0.525, 0.000, 0.000}, {-0.466, 0.000, 0.000}, {-0.350, 0.000, 0.000}, {-0.160, 0.000, 0.000}, {0.081, 0.000, 0.000}, {0.332, 0.000, 0.000}, {0.550, 0.000, 0.000}, {0.702, 0.000, 0.000}, {0.794, 0.000, 0.000}, {0.838, 0.000, 0.000}, {0.850, 0.000, 0.000}, {0.849, 0.000, 0.000}, {0.844, 0.000, 0.000}, {0.829, 0.000, 0.000} },
+				LeftKnee = { {-0.900, 0.000, 0.000}, {-1.026, 0.000, 0.000}, {-1.175, 0.000, 0.000}, {-1.337, 0.000, 0.000}, {-1.500, 0.000, 0.000}, {-1.653, 0.000, 0.000}, {-1.780, 0.000, 0.000}, {-1.868, 0.000, 0.000}, {-1.900, 0.000, 0.000}, {-1.817, 0.000, 0.000}, {-1.605, 0.000, 0.000}, {-1.315, 0.000, 0.000}, {-1.000, 0.000, 0.000}, {-0.709, 0.000, 0.000}, {-0.470, 0.000, 0.000}, {-0.309, 0.000, 0.000}, {-0.250, 0.000, 0.000}, {-0.297, 0.000, 0.000}, {-0.400, 0.000, 0.000}, {-0.503, 0.000, 0.000}, {-0.550, 0.000, 0.000}, {-0.519, 0.000, 0.000}, {-0.450, 0.000, 0.000}, {-0.381, 0.000, 0.000}, {-0.350, 0.000, 0.000}, {-0.375, 0.000, 0.000}, {-0.437, 0.000, 0.000}, {-0.518, 0.000, 0.000}, {-0.600, 0.000, 0.000}, {-0.669, 0.000, 0.000}, {-0.733, 0.000, 0.000}, {-0.806, 0.000, 0.000} },
+				RightKnee = { {-0.250, 0.000, 0.000}, {-0.297, 0.000, 0.000}, {-0.400, 0.000, 0.000}, {-0.503, 0.000, 0.000}, {-0.550, 0.000, 0.000}, {-0.519, 0.000, 0.000}, {-0.450, 0.000, 0.000}, {-0.381, 0.000, 0.000}, {-0.350, 0.000, 0.000}, {-0.375, 0.000, 0.000}, {-0.437, 0.000, 0.000}, {-0.518, 0.000, 0.000}, {-0.600, 0.000, 0.000}, {-0.669, 0.000, 0.000}, {-0.733, 0.000, 0.000}, {-0.806, 0.000, 0.000}, {-0.900, 0.000, 0.000}, {-1.026, 0.000, 0.000}, {-1.175, 0.000, 0.000}, {-1.337, 0.000, 0.000}, {-1.500, 0.000, 0.000}, {-1.653, 0.000, 0.000}, {-1.780, 0.000, 0.000}, {-1.868, 0.000, 0.000}, {-1.900, 0.000, 0.000}, {-1.817, 0.000, 0.000}, {-1.605, 0.000, 0.000}, {-1.315, 0.000, 0.000}, {-1.000, 0.000, 0.000}, {-0.709, 0.000, 0.000}, {-0.470, 0.000, 0.000}, {-0.309, 0.000, 0.000} },
+				LeftAnkle = { {-0.300, 0.000, 0.000}, {-0.290, 0.000, 0.000}, {-0.256, 0.000, 0.000}, {-0.195, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {0.026, 0.000, 0.000}, {0.156, 0.000, 0.000}, {0.259, 0.000, 0.000}, {0.300, 0.000, 0.000}, {0.294, 0.000, 0.000}, {0.281, 0.000, 0.000}, {0.264, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.241, 0.000, 0.000}, {0.234, 0.000, 0.000}, {0.222, 0.000, 0.000}, {0.200, 0.000, 0.000}, {0.164, 0.000, 0.000}, {0.121, 0.000, 0.000}, {0.080, 0.000, 0.000}, {0.050, 0.000, 0.000}, {0.038, 0.000, 0.000}, {0.033, 0.000, 0.000}, {0.025, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.068, 0.000, 0.000}, {-0.169, 0.000, 0.000}, {-0.260, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.300, 0.000, 0.000} },
+				RightAnkle = { {0.200, 0.000, 0.000}, {0.164, 0.000, 0.000}, {0.121, 0.000, 0.000}, {0.080, 0.000, 0.000}, {0.050, 0.000, 0.000}, {0.038, 0.000, 0.000}, {0.033, 0.000, 0.000}, {0.025, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.068, 0.000, 0.000}, {-0.169, 0.000, 0.000}, {-0.260, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.300, 0.000, 0.000}, {-0.290, 0.000, 0.000}, {-0.256, 0.000, 0.000}, {-0.195, 0.000, 0.000}, {-0.100, 0.000, 0.000}, {0.026, 0.000, 0.000}, {0.156, 0.000, 0.000}, {0.259, 0.000, 0.000}, {0.300, 0.000, 0.000}, {0.294, 0.000, 0.000}, {0.281, 0.000, 0.000}, {0.264, 0.000, 0.000}, {0.250, 0.000, 0.000}, {0.241, 0.000, 0.000}, {0.234, 0.000, 0.000}, {0.222, 0.000, 0.000} },
+			},
+		},
+		swim = {
+			length = 1.40,
+			rootY = { 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000, 0.000 },
+			joints = {
+				Root = { {-1.450, 0.000, 0.000}, {-1.450, 0.000, 0.068}, {-1.450, 0.000, 0.134}, {-1.450, 0.000, 0.194}, {-1.450, 0.000, 0.247}, {-1.450, 0.000, 0.291}, {-1.450, 0.000, 0.323}, {-1.450, 0.000, 0.343}, {-1.450, 0.000, 0.350}, {-1.450, 0.000, 0.343}, {-1.450, 0.000, 0.323}, {-1.450, 0.000, 0.291}, {-1.450, 0.000, 0.247}, {-1.450, 0.000, 0.194}, {-1.450, 0.000, 0.134}, {-1.450, 0.000, 0.068}, {-1.450, 0.000, 0.000}, {-1.450, 0.000, -0.068}, {-1.450, 0.000, -0.134}, {-1.450, 0.000, -0.194}, {-1.450, 0.000, -0.247}, {-1.450, 0.000, -0.291}, {-1.450, 0.000, -0.323}, {-1.450, 0.000, -0.343}, {-1.450, 0.000, -0.350}, {-1.450, 0.000, -0.343}, {-1.450, 0.000, -0.323}, {-1.450, 0.000, -0.291}, {-1.450, 0.000, -0.247}, {-1.450, 0.000, -0.194}, {-1.450, 0.000, -0.134}, {-1.450, 0.000, -0.068} },
+				Waist = { {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000}, {0.100, 0.000, 0.000} },
+				Neck = { {0.350, 0.086, 0.000}, {0.350, 0.018, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.001, 0.000}, {0.350, 0.006, 0.000}, {0.350, 0.061, 0.000}, {0.350, 0.185, 0.000}, {0.350, 0.346, 0.000}, {0.350, 0.520, 0.000}, {0.350, 0.687, 0.000}, {0.350, 0.814, 0.000}, {0.350, 0.878, 0.000}, {0.350, 0.894, 0.000}, {0.350, 0.842, 0.000}, {0.350, 0.715, 0.000}, {0.350, 0.553, 0.000}, {0.350, 0.380, 0.000}, {0.350, 0.214, 0.000} },
+				LeftShoulder = { {-0.000, 0.000, 0.000}, {-0.196, 0.000, 0.000}, {-0.393, 0.000, 0.000}, {-0.589, 0.000, 0.000}, {-0.785, 0.000, 0.000}, {-0.982, 0.000, 0.000}, {-1.178, 0.000, 0.000}, {-1.374, 0.000, 0.000}, {-1.571, 0.000, 0.000}, {-1.767, 0.000, 0.000}, {-1.963, 0.000, 0.000}, {-2.160, 0.000, 0.000}, {-2.356, 0.000, 0.000}, {-2.553, 0.000, 0.000}, {-2.749, 0.000, 0.000}, {-2.945, 0.000, 0.000}, {-3.142, 0.000, 0.000}, {-3.338, 0.000, 0.000}, {-3.534, 0.000, 0.000}, {-3.731, 0.000, 0.000}, {-3.927, 0.000, 0.000}, {-4.123, 0.000, 0.000}, {-4.320, 0.000, 0.000}, {-4.516, 0.000, 0.000}, {-4.712, 0.000, 0.000}, {-4.909, 0.000, 0.000}, {-5.105, 0.000, 0.000}, {-5.301, 0.000, 0.000}, {-5.498, 0.000, 0.000}, {-5.694, 0.000, 0.000}, {-5.890, 0.000, 0.000}, {-6.087, 0.000, 0.000} },
+				RightShoulder = { {3.142, 0.000, 0.000}, {2.945, 0.000, 0.000}, {2.749, 0.000, 0.000}, {2.553, 0.000, 0.000}, {2.356, 0.000, 0.000}, {2.160, 0.000, 0.000}, {1.963, 0.000, 0.000}, {1.767, 0.000, 0.000}, {1.571, 0.000, 0.000}, {1.374, 0.000, 0.000}, {1.178, 0.000, 0.000}, {0.982, 0.000, 0.000}, {0.785, 0.000, 0.000}, {0.589, 0.000, 0.000}, {0.393, 0.000, 0.000}, {0.196, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.196, 0.000, 0.000}, {-0.393, 0.000, 0.000}, {-0.589, 0.000, 0.000}, {-0.785, 0.000, 0.000}, {-0.982, 0.000, 0.000}, {-1.178, 0.000, 0.000}, {-1.374, 0.000, 0.000}, {-1.571, 0.000, 0.000}, {-1.767, 0.000, 0.000}, {-1.963, 0.000, 0.000}, {-2.160, 0.000, 0.000}, {-2.356, 0.000, 0.000}, {-2.553, 0.000, 0.000}, {-2.749, 0.000, 0.000}, {-2.945, 0.000, 0.000} },
+				LeftElbow = { {0.350, 0.000, 0.000}, {0.423, 0.000, 0.000}, {0.560, 0.000, 0.000}, {0.665, 0.000, 0.000}, {0.739, 0.000, 0.000}, {0.805, 0.000, 0.000}, {0.858, 0.000, 0.000}, {0.890, 0.000, 0.000}, {0.900, 0.000, 0.000}, {0.890, 0.000, 0.000}, {0.858, 0.000, 0.000}, {0.805, 0.000, 0.000}, {0.739, 0.000, 0.000}, {0.665, 0.000, 0.000}, {0.560, 0.000, 0.000}, {0.423, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000} },
+				RightElbow = { {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.350, 0.000, 0.000}, {0.423, 0.000, 0.000}, {0.560, 0.000, 0.000}, {0.665, 0.000, 0.000}, {0.739, 0.000, 0.000}, {0.805, 0.000, 0.000}, {0.858, 0.000, 0.000}, {0.890, 0.000, 0.000}, {0.900, 0.000, 0.000}, {0.890, 0.000, 0.000}, {0.858, 0.000, 0.000}, {0.805, 0.000, 0.000}, {0.739, 0.000, 0.000}, {0.665, 0.000, 0.000}, {0.560, 0.000, 0.000}, {0.423, 0.000, 0.000} },
+				LeftHip = { {0.000, 0.000, 0.000}, {-0.140, 0.000, 0.000}, {-0.203, 0.000, 0.000}, {-0.197, 0.000, 0.000}, {-0.156, 0.000, 0.000}, {-0.049, 0.000, 0.000}, {0.084, 0.000, 0.000}, {0.183, 0.000, 0.000}, {0.220, 0.000, 0.000}, {0.183, 0.000, 0.000}, {0.084, 0.000, 0.000}, {-0.049, 0.000, 0.000}, {-0.156, 0.000, 0.000}, {-0.197, 0.000, 0.000}, {-0.203, 0.000, 0.000}, {-0.140, 0.000, 0.000}, {-0.000, 0.000, 0.000}, {0.140, 0.000, 0.000}, {0.203, 0.000, 0.000}, {0.197, 0.000, 0.000}, {0.156, 0.000, 0.000}, {0.049, 0.000, 0.000}, {-0.084, 0.000, 0.000}, {-0.183, 0.000, 0.000}, {-0.220, 0.000, 0.000}, {-0.183, 0.000, 0.000}, {-0.084, 0.000, 0.000}, {0.049, 0.000, 0.000}, {0.156, 0.000, 0.000}, {0.197, 0.000, 0.000}, {0.203, 0.000, 0.000}, {0.140, 0.000, 0.000} },
+				RightHip = { {0.000, 0.000, 0.000}, {0.140, 0.000, 0.000}, {0.203, 0.000, 0.000}, {0.197, 0.000, 0.000}, {0.156, 0.000, 0.000}, {0.049, 0.000, 0.000}, {-0.084, 0.000, 0.000}, {-0.183, 0.000, 0.000}, {-0.220, 0.000, 0.000}, {-0.183, 0.000, 0.000}, {-0.084, 0.000, 0.000}, {0.049, 0.000, 0.000}, {0.156, 0.000, 0.000}, {0.197, 0.000, 0.000}, {0.203, 0.000, 0.000}, {0.140, 0.000, 0.000}, {0.000, 0.000, 0.000}, {-0.140, 0.000, 0.000}, {-0.203, 0.000, 0.000}, {-0.197, 0.000, 0.000}, {-0.156, 0.000, 0.000}, {-0.049, 0.000, 0.000}, {0.084, 0.000, 0.000}, {0.183, 0.000, 0.000}, {0.220, 0.000, 0.000}, {0.183, 0.000, 0.000}, {0.084, 0.000, 0.000}, {-0.049, 0.000, 0.000}, {-0.156, 0.000, 0.000}, {-0.197, 0.000, 0.000}, {-0.203, 0.000, 0.000}, {-0.140, 0.000, 0.000} },
+				LeftKnee = { {-0.250, 0.000, 0.000}, {-0.206, 0.000, 0.000}, {-0.185, 0.000, 0.000}, {-0.187, 0.000, 0.000}, {-0.201, 0.000, 0.000}, {-0.235, 0.000, 0.000}, {-0.277, 0.000, 0.000}, {-0.308, 0.000, 0.000}, {-0.320, 0.000, 0.000}, {-0.308, 0.000, 0.000}, {-0.277, 0.000, 0.000}, {-0.235, 0.000, 0.000}, {-0.201, 0.000, 0.000}, {-0.187, 0.000, 0.000}, {-0.185, 0.000, 0.000}, {-0.206, 0.000, 0.000}, {-0.250, 0.000, 0.000}, {-0.294, 0.000, 0.000}, {-0.315, 0.000, 0.000}, {-0.313, 0.000, 0.000}, {-0.299, 0.000, 0.000}, {-0.265, 0.000, 0.000}, {-0.223, 0.000, 0.000}, {-0.192, 0.000, 0.000}, {-0.180, 0.000, 0.000}, {-0.192, 0.000, 0.000}, {-0.223, 0.000, 0.000}, {-0.265, 0.000, 0.000}, {-0.299, 0.000, 0.000}, {-0.313, 0.000, 0.000}, {-0.315, 0.000, 0.000}, {-0.294, 0.000, 0.000} },
+				RightKnee = { {-0.250, 0.000, 0.000}, {-0.294, 0.000, 0.000}, {-0.315, 0.000, 0.000}, {-0.313, 0.000, 0.000}, {-0.299, 0.000, 0.000}, {-0.265, 0.000, 0.000}, {-0.223, 0.000, 0.000}, {-0.192, 0.000, 0.000}, {-0.180, 0.000, 0.000}, {-0.192, 0.000, 0.000}, {-0.223, 0.000, 0.000}, {-0.265, 0.000, 0.000}, {-0.299, 0.000, 0.000}, {-0.313, 0.000, 0.000}, {-0.315, 0.000, 0.000}, {-0.294, 0.000, 0.000}, {-0.250, 0.000, 0.000}, {-0.206, 0.000, 0.000}, {-0.185, 0.000, 0.000}, {-0.187, 0.000, 0.000}, {-0.201, 0.000, 0.000}, {-0.235, 0.000, 0.000}, {-0.277, 0.000, 0.000}, {-0.308, 0.000, 0.000}, {-0.320, 0.000, 0.000}, {-0.308, 0.000, 0.000}, {-0.277, 0.000, 0.000}, {-0.235, 0.000, 0.000}, {-0.201, 0.000, 0.000}, {-0.187, 0.000, 0.000}, {-0.185, 0.000, 0.000}, {-0.206, 0.000, 0.000} },
+				LeftAnkle = { {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000} },
+				RightAnkle = { {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000}, {-0.500, 0.000, 0.000} },
+			},
+		},
+	},
+}
 ]]></ProtectedString></Properties></Item></Item><Item class="LocalScript" referent="RBX_PetsClient"><Properties><string name="Name">PetsClient</string><ProtectedString name="Source"><![CDATA[--[[
 	PetsClient  (LocalScript)
 	Put in: StarterPlayer > StarterPlayerScripts
@@ -5316,10 +6228,11 @@ DisasterConfig.DisasterDuration = 25
 -- Rarity tiers. Multiplier scales the survival payout; RollerBonus is extra coins for the roller.
 DisasterConfig.RarityOrder = { "Common", "Rare", "Mythic", "Transcendent" }
 DisasterConfig.Rarities = {
-	Common = { Name = "Common", Color = Color3.fromRGB(200, 205, 220), Multiplier = 1,   RollerBonus = 0 },
-	Rare   = { Name = "Rare",   Color = Color3.fromRGB(90, 170, 255),  Multiplier = 1.5, RollerBonus = 40 },
-	Mythic = { Name = "Mythic", Color = Color3.fromRGB(255, 80, 200),  Multiplier = 3,   RollerBonus = 150 },
-	Transcendent = { Name = "Transcendent", Color = Color3.fromRGB(150, 255, 245), Multiplier = 10, RollerBonus = 1000 },
+	-- Color = the tier's text colour everywhere (roll reel, banners, Index); Glow = its accent / second gradient colour
+	Common = { Name = "Common", Color = Color3.fromRGB(245, 245, 250), Glow = Color3.fromRGB(170, 178, 196), Multiplier = 1,   RollerBonus = 0 },
+	Rare   = { Name = "Rare",   Color = Color3.fromRGB(60, 150, 255),  Glow = Color3.fromRGB(20, 70, 200),   Multiplier = 1.5, RollerBonus = 40 },
+	Mythic = { Name = "Mythic", Color = Color3.fromRGB(190, 90, 255),  Glow = Color3.fromRGB(255, 80, 200),  Multiplier = 3,   RollerBonus = 150 },
+	Transcendent = { Name = "Transcendent", Color = Color3.fromRGB(120, 255, 240), Glow = Color3.fromRGB(255, 240, 120), Multiplier = 10, RollerBonus = 1000, Rainbow = true },
 }
 
 -- Transcendent disasters are this rare (1 in N rounds, before Server Luck / the weekly featured boost)
@@ -6880,6 +7793,17 @@ local function runRound()
 		disaster = config.GetDisasterById(forcedId)
 	end
 
+	-- A disaster summoned in the shop (LobbyUpgrade's SummonService queue) comes next
+	if not disaster then
+		local take = ServerStorage:FindFirstChild("TakeSummon")
+		if take and take:IsA("BindableFunction") then
+			local ok, id = pcall(take.Invoke, take)
+			if ok and id then
+				disaster = config.GetDisasterById(id)
+			end
+		end
+	end
+
 	if not disaster then
 		local luckRounds = ServerStorage:GetAttribute("LuckRounds") or 0
 		if luckRounds > 0 then
@@ -7341,4 +8265,2259 @@ end
 Players.PlayerAdded:Connect(onPlayerAdded)
 for _, player in Players:GetPlayers() do
 	onPlayerAdded(player)
-end]]></ProtectedString></Properties></Item></Item></roblox>
+end]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_ProgressionServer"><Properties><string name="Name">ProgressionServer</string><bool name="Disabled">true</bool><token name="RunContext">0</token><ProtectedString name="Source"><![CDATA[--[[
+	ProgressionServer  (Script)
+	Put in: ServerScriptService
+
+	Needs: ReplicatedStorage.ProgressionConfig, and the patched DisasterGameManager
+	(which fires ServerStorage.RoundEvents "Started"/"Ended").
+
+	Handles: saving (DataStore), coins, survival streaks, round rewards, daily quests,
+	daily login reward, trail shop + passes + coin packs, leaderboards, spectate/respawn
+	hold, and analytics events.
+
+	Studio testing: Game Settings > Security > "Enable Studio Access to API Services",
+	otherwise saving is skipped (progress still works for the session).
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local DataStoreService = game:GetService("DataStoreService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local AnalyticsService = game:GetService("AnalyticsService")
+
+local Config = require(ReplicatedStorage:WaitForChild("ProgressionConfig"))
+local BadgeService = game:GetService("BadgeService")
+local DisasterConfig = require(ReplicatedStorage:WaitForChild("DisasterAssets"):WaitForChild("DisasterConfig"))
+local Offers = Config.Offers
+
+--------------------------------------------------------------------
+-- Remotes
+--------------------------------------------------------------------
+local remotes = Instance.new("Folder")
+remotes.Name = "ProgressionRemotes"
+remotes.Parent = ReplicatedStorage
+
+local function makeRemote(name, class)
+	local r = Instance.new(class or "RemoteEvent")
+	r.Name = name
+	r.Parent = remotes
+	return r
+end
+
+local DataUpdate = makeRemote("DataUpdate")
+local Notify = makeRemote("Notify")
+local RoundResult = makeRemote("RoundResult")
+local SpectateState = makeRemote("SpectateState")
+local RequestData = makeRemote("RequestData")
+local BuyCosmetic = makeRemote("BuyCosmetic")
+local EquipCosmetic = makeRemote("EquipCosmetic")
+local ClaimDaily = makeRemote("ClaimDaily")
+local PromptPass = makeRemote("PromptPass")
+local PromptProduct = makeRemote("PromptProduct")
+local GetLeaderboard = makeRemote("GetLeaderboard", "RemoteFunction")
+local DeathOffer = makeRemote("DeathOffer")
+local ShopOpened = makeRemote("ShopOpened")
+
+local roundEvents = ServerStorage:FindFirstChild("RoundEvents")
+if not roundEvents then
+	roundEvents = Instance.new("BindableEvent")
+	roundEvents.Name = "RoundEvents"
+	roundEvents.Parent = ServerStorage
+end
+
+--------------------------------------------------------------------
+-- Data
+--------------------------------------------------------------------
+local store = DataStoreService:GetDataStore(Config.DataStoreName)
+local streakBoard = DataStoreService:GetOrderedDataStore(Config.LeaderboardStreak)
+local survivalBoard = DataStoreService:GetOrderedDataStore(Config.LeaderboardSurvivals)
+
+local function deepCopy(t)
+	if type(t) ~= "table" then
+		return t
+	end
+	local c = {}
+	for k, v in pairs(t) do
+		c[k] = deepCopy(v)
+	end
+	return c
+end
+
+local DEFAULT = {
+	Coins = 0,
+	Streak = 0,
+	BestStreak = 0,
+	Survivals = 0,
+	Rounds = 0,
+	Owned = {},
+	Equipped = "",
+	LastDaily = 0,
+	DailyStreak = 0,
+	Seen = false,
+	DisasterSurvived = {},
+	Quests = { Day = 0, Ids = {}, Progress = {}, Done = {} },
+	Receipts = {},
+	StreakSavers = 0,
+	Revives = 0,
+	IndexClaimed = {},
+	Pets = { Owned = {}, Equipped = {} },
+}
+
+local data = {}        -- [Player] = save table
+local noSave = {}      -- [Player] = true when the load failed (never overwrite their real data)
+local passes = {}      -- [Player] = { [passKey] = bool }
+local firstJoin = {}   -- [Player] = true until the welcome flag is delivered
+
+local function track(player, eventName, value)
+	pcall(function()
+		AnalyticsService:LogCustomEvent(player, eventName, value)
+	end)
+end
+
+--------------------------------------------------------------------
+-- Onboarding funnel (each step is logged once per player, remembered in their save)
+--------------------------------------------------------------------
+local FUNNEL = { joined = 1, round_seen = 2, first_result = 3, second_round = 4, first_quest = 5, shop_opened = 6 }
+local FUNNEL_NAMES = {
+	joined = "Joined", round_seen = "Saw first round", first_result = "First survive or death",
+	second_round = "Played second round", first_quest = "Completed first quest", shop_opened = "Opened shop",
+}
+local function funnelStep(player, key)
+	local d = data[player]
+	local step = FUNNEL[key]
+	if not d or not step then
+		return
+	end
+	d.Funnel = d.Funnel or {}
+	if d.Funnel[key] then
+		return
+	end
+	d.Funnel[key] = true
+	pcall(function()
+		AnalyticsService:LogOnboardingFunnelStepEvent(player, step, FUNNEL_NAMES[key])
+	end)
+	track(player, "funnel_" .. key, step) -- also shows up as a custom event
+end
+ShopOpened.OnServerEvent:Connect(function(player)
+	funnelStep(player, "shop_opened")
+end)
+
+--------------------------------------------------------------------
+-- Mirror server-only luck state + round count to clients (for the odds line and luck chip)
+--------------------------------------------------------------------
+local function mirrorLuck()
+	ReplicatedStorage:SetAttribute("LuckRounds", ServerStorage:GetAttribute("LuckRounds") or 0)
+	ReplicatedStorage:SetAttribute("LuckMultiplier", ServerStorage:GetAttribute("LuckMultiplier") or 1)
+end
+ServerStorage:GetAttributeChangedSignal("LuckRounds"):Connect(mirrorLuck)
+ServerStorage:GetAttributeChangedSignal("LuckMultiplier"):Connect(mirrorLuck)
+mirrorLuck()
+
+--------------------------------------------------------------------
+-- Friend cache (checked when a player joins so finishRound never has to wait on the web)
+--------------------------------------------------------------------
+local friendCache = {}
+local function friendKey(a, b)
+	local x, y = a.UserId, b.UserId
+	if x > y then
+		x, y = y, x
+	end
+	return x .. ":" .. y
+end
+local function friendCached(a, b)
+	return friendCache[friendKey(a, b)] == true
+end
+local function cacheFriends(newPlayer)
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= newPlayer then
+			task.spawn(function()
+				local ok, res = pcall(function()
+					return newPlayer:IsFriendsWith(other.UserId)
+				end)
+				friendCache[friendKey(newPlayer, other)] = ok and res == true
+			end)
+		end
+	end
+end
+Players.PlayerRemoving:Connect(function(p)
+	for key in pairs(friendCache) do
+		local x, y = string.match(key, "^(%d+):(%d+)$")
+		if tonumber(x) == p.UserId or tonumber(y) == p.UserId then
+			friendCache[key] = nil
+		end
+	end
+end)
+
+local function loadData(player)
+	local key = "P_" .. player.UserId
+	local ok, result
+	for _ = 1, 3 do
+		ok, result = pcall(function()
+			return store:GetAsync(key)
+		end)
+		if ok then
+			break
+		end
+		task.wait(1.5)
+	end
+	local d
+	if ok and type(result) == "table" then
+		d = result
+	elseif ok then
+		d = {}
+	else
+		d = {}
+		noSave[player] = true
+		warn("[Progression] Could not load data for " .. player.Name .. "; session progress will not be saved.")
+	end
+	for k, v in pairs(DEFAULT) do
+		if d[k] == nil then
+			d[k] = deepCopy(v)
+		end
+	end
+	return d
+end
+
+local function saveData(player)
+	local d = data[player]
+	if not d or noSave[player] then
+		return true
+	end
+	local ok, err = pcall(function()
+		store:SetAsync("P_" .. player.UserId, d)
+	end)
+	if not ok then
+		warn("[Progression] Save failed for " .. player.Name .. ": " .. tostring(err))
+	end
+	return ok
+end
+
+local function saveBoards(player)
+	local d = data[player]
+	if not d or noSave[player] then
+		return
+	end
+	pcall(function()
+		if d.BestStreak > 0 then
+			streakBoard:SetAsync(tostring(player.UserId), d.BestStreak)
+		end
+		if d.Survivals > 0 then
+			survivalBoard:SetAsync(tostring(player.UserId), d.Survivals)
+		end
+	end)
+end
+
+--------------------------------------------------------------------
+-- Passes / cosmetics / daily / quests helpers
+--------------------------------------------------------------------
+local function checkPasses(player)
+	local owned = {}
+	for _, def in ipairs(Config.Passes) do
+		owned[def.Key] = false
+		if def.Id > 0 then
+			local ok, has = pcall(function()
+				return MarketplaceService:UserOwnsGamePassAsync(player.UserId, def.Id)
+			end)
+			owned[def.Key] = ok and has == true
+		end
+	end
+	passes[player] = owned
+end
+
+local cosmeticById = {}
+for _, c in ipairs(Config.Cosmetics) do
+	cosmeticById[c.Id] = c
+end
+
+local function owns(player, def)
+	if data[player].Owned[def.Id] then
+		return true
+	end
+	if def.RequiresPass and passes[player] and passes[player][def.RequiresPass] then
+		return true
+	end
+	return false
+end
+
+local function dailyInfo(d)
+	local now = os.time()
+	local elapsed = now - d.LastDaily
+	local ready = elapsed >= Config.Daily.CooldownHours * 3600
+	local nextStreak = d.DailyStreak
+	if ready then
+		if elapsed > Config.Daily.ResetHours * 3600 then
+			nextStreak = 1
+		else
+			nextStreak = d.DailyStreak + 1
+		end
+	end
+	local rewards = Config.Daily.Rewards
+	local idx = ((math.max(nextStreak, 1) - 1) % #rewards) + 1
+	local remaining = ready and 0 or math.max(0, Config.Daily.CooldownHours * 3600 - elapsed)
+	return ready, idx, rewards[idx], remaining
+end
+
+local questById = {}
+for _, q in ipairs(Config.Quests) do
+	questById[q.Id] = q
+end
+
+local function ensureQuests(d)
+	local day = math.floor(os.time() / 86400)
+	if d.Quests.Day ~= day or not d.Quests.Ids then
+		local rng = Random.new(day)
+		local pool = table.clone(Config.Quests)
+		local ids = {}
+		for _ = 1, math.min(Config.DailyQuestCount, #pool) do
+			local i = rng:NextInteger(1, #pool)
+			table.insert(ids, pool[i].Id)
+			table.remove(pool, i)
+		end
+		d.Quests = { Day = day, Ids = ids, Progress = {}, Done = {} }
+	end
+end
+
+local function snapshot(player)
+	local d = data[player]
+	if not d then
+		return nil
+	end
+	ensureQuests(d)
+	local ready, idx, reward, remaining = dailyInfo(d)
+	local quests = {}
+	for _, id in ipairs(d.Quests.Ids) do
+		local q = questById[id]
+		if q then
+			table.insert(quests, {
+				Id = id,
+				Desc = q.Desc,
+				Goal = q.Goal,
+				Reward = q.Reward,
+				Progress = d.Quests.Progress[id] or 0,
+				Done = d.Quests.Done[id] == true,
+			})
+		end
+	end
+	local owned = {}
+	for _, c in ipairs(Config.Cosmetics) do
+		owned[c.Id] = owns(player, c)
+	end
+	return {
+		Coins = d.Coins,
+		Streak = d.Streak,
+		BestStreak = d.BestStreak,
+		Survivals = d.Survivals,
+		Owned = owned,
+		Equipped = d.Equipped,
+		Passes = passes[player] or {},
+		Quests = quests,
+		DailyReady = ready,
+		DailyDay = idx,
+		DailyReward = reward,
+		DailyRemaining = remaining,
+		DailyStreak = d.DailyStreak,
+		Index = d.DisasterSurvived,
+		IndexClaimed = d.IndexClaimed,
+		Inventory = { StreakSavers = d.StreakSavers, Revives = d.Revives },
+		Luck = {
+			Rounds = ServerStorage:GetAttribute("LuckRounds") or 0,
+			Buyer = ServerStorage:GetAttribute("LuckBuyer"),
+		},
+		DisastersSurvived = (function()
+			local n = 0
+			for _ in pairs(d.DisasterSurvived) do
+				n += 1
+			end
+			return n
+		end)(),
+	}
+end
+
+local function sync(player)
+	local d = data[player]
+	if not d then
+		return
+	end
+	player:SetAttribute("Rounds", d.Rounds)
+	local ls = player:FindFirstChild("leaderstats")
+	if ls then
+		if ls:FindFirstChild("Coins") then
+			ls.Coins.Value = d.Coins
+		end
+		if ls:FindFirstChild("Streak") then
+			ls.Streak.Value = d.Streak
+		end
+	end
+	DataUpdate:FireClient(player, snapshot(player))
+end
+
+local function addCoins(player, amount)
+	local d = data[player]
+	if not d then
+		return 0
+	end
+	if passes[player] and passes[player].DoubleCoins then
+		amount *= 2
+	end
+	amount = math.floor(amount)
+	d.Coins += amount
+	sync(player)
+	return amount
+end
+
+--------------------------------------------------------------------
+-- Pet system hooks: PetService talks to this instead of touching `data`.
+--------------------------------------------------------------------
+local ProgressionAPI = Instance.new("BindableFunction")
+ProgressionAPI.Name = "ProgressionAPI"
+ProgressionAPI.OnInvoke = function(action, player, amount)
+	local d = data[player]
+	if not d then
+		return nil -- save not loaded yet
+	end
+	if action == "GetPets" then
+		return deepCopy(d.Pets)
+	elseif action == "SetPets" then
+		if type(amount) == "table" then
+			d.Pets = deepCopy(amount)
+			return true
+		end
+		return false
+	elseif action == "Spend" then
+		if type(amount) ~= "number" or amount <= 0 or d.Coins < amount then
+			return false
+		end
+		d.Coins -= amount
+		sync(player)
+		return true
+	elseif action == "AddCoinsRaw" then -- not doubled by the DoubleCoins pass (used for duplicate-pet refunds)
+		if type(amount) == "number" and amount > 0 then
+			d.Coins += math.floor(amount)
+			sync(player)
+			return true
+		end
+		return false
+	end
+	return nil
+end
+ProgressionAPI.Parent = ServerStorage
+
+-- Lobby coins (LobbyService fires ServerStorage.AwardCoins)
+local awardEvent = ServerStorage:FindFirstChild("AwardCoins")
+if not awardEvent then
+	awardEvent = Instance.new("BindableEvent")
+	awardEvent.Name = "AwardCoins"
+	awardEvent.Parent = ServerStorage
+end
+awardEvent.Event:Connect(function(player, amount, reason)
+	if typeof(player) == "Instance" and player.Parent == Players and data[player] and type(amount) == "number" then
+		local given = addCoins(player, amount)
+		track(player, tostring(reason or "bonus_coins"), given)
+	end
+end)
+
+local function progressQuests(player, kind, disasterId)
+	local d = data[player]
+	if not d then
+		return
+	end
+	ensureQuests(d)
+	local Q = d.Quests
+	for _, id in ipairs(Q.Ids) do
+		local def = questById[id]
+		if def and not Q.Done[id] then
+			local p = Q.Progress[id] or 0
+			local newP = p
+			if def.Type == "Play" and kind == "Play" then
+				newP += 1
+			elseif def.Type == "Survive" and kind == "Survive" then
+				newP += 1
+			elseif def.Type == "Streak" and kind == "Streak" then
+				newP = math.max(p, d.Streak)
+			elseif def.Type == "SurviveDisaster" and kind == "Survive" and disasterId == def.Disaster then
+				newP += 1
+			end
+			if newP ~= p then
+				Q.Progress[id] = math.min(newP, def.Goal)
+				if newP >= def.Goal then
+					Q.Done[id] = true
+					local given = addCoins(player, def.Reward)
+					Notify:FireClient(player, ("Quest complete: %s  +%d coins"):format(def.Desc, given), "quest")
+					track(player, "quest_completed", given)
+					funnelStep(player, "first_quest")
+				end
+			end
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- Trail cosmetic
+--------------------------------------------------------------------
+local function applyTrail(player)
+	local char = player.Character
+	local d = data[player]
+	if not char or not d then
+		return
+	end
+	local hrp = char:WaitForChild("HumanoidRootPart", 10)
+	if not hrp then
+		return
+	end
+	for _, n in ipairs({ "CosmeticTrail", "TrailA0", "TrailA1" }) do
+		local old = hrp:FindFirstChild(n)
+		if old then
+			old:Destroy()
+		end
+	end
+	local def = cosmeticById[d.Equipped]
+	if not def or not owns(player, def) then
+		return
+	end
+	local a0 = Instance.new("Attachment")
+	a0.Name = "TrailA0"
+	a0.Position = Vector3.new(0, 1, 0)
+	a0.Parent = hrp
+	local a1 = Instance.new("Attachment")
+	a1.Name = "TrailA1"
+	a1.Position = Vector3.new(0, -1, 0)
+	a1.Parent = hrp
+	local trail = Instance.new("Trail")
+	trail.Name = "CosmeticTrail"
+	trail.Attachment0 = a0
+	trail.Attachment1 = a1
+	trail.Color = ColorSequence.new(def.Color1, def.Color2)
+	trail.Transparency = NumberSequence.new(0, 1)
+	trail.Lifetime = 0.7
+	trail.LightEmission = 1
+	trail.Parent = hrp
+end
+
+--------------------------------------------------------------------
+-- Round tracking
+--------------------------------------------------------------------
+local roundActive = false
+local currentDisaster = nil
+local roller = nil
+local roundT0 = 0
+local reviveUsed = {}     -- [Player] = revives used this round
+local lostStreak = {}     -- [Player] = { n = streak, t = os.clock() } while a Streak Saver purchase can still restore it
+local reviveShield = {}   -- [Player] = true -> give a short forcefield on next spawn
+local participants = {}     -- [Player] = { t0, died, diedAt }
+local pendingRespawn = {}   -- [Player] = true
+
+if Config.HoldRespawnUntilRoundEnd then
+	Players.RespawnTime = 1000 -- we respawn players ourselves
+end
+
+local function respawn(player)
+	pendingRespawn[player] = nil
+	if player.Parent == Players then
+		SpectateState:FireClient(player, false)
+		player:LoadCharacter()
+	end
+end
+
+--------------------------------------------------------------------
+-- Disaster Index rewards
+--------------------------------------------------------------------
+local function awardBadge(player, key)
+	local id = Config.Badges and Config.Badges[key]
+	if id and id > 0 then
+		task.spawn(function()
+			pcall(function()
+				BadgeService:AwardBadge(player.UserId, id)
+			end)
+		end)
+	end
+end
+
+local function grantIndexReward(player, claimKey, coins, cosmeticId, badgeKey, message)
+	local d = data[player]
+	if not d or d.IndexClaimed[claimKey] then
+		return
+	end
+	d.IndexClaimed[claimKey] = true
+	local given = coins > 0 and addCoins(player, coins) or 0
+	if cosmeticId then
+		d.Owned[cosmeticId] = true
+	end
+	if badgeKey then
+		awardBadge(player, badgeKey)
+	end
+	Notify:FireClient(player, message:format(given), "good")
+	track(player, "index_reward", given)
+	sync(player)
+end
+
+-- Call after a survival. isNew = first time surviving this disaster. Passing any id with isNew=true
+-- also re-checks milestones (used once at join so existing players are credited).
+local function checkIndex(player, disasterId, isNew)
+	local d = data[player]
+	if not d or not disasterId or not isNew then
+		return
+	end
+	local I = Config.Index
+	local def = DisasterConfig.GetDisasterById(disasterId)
+	if def and def.Rarity == "Mythic" then
+		grantIndexReward(player, "mythic_" .. disasterId, I.MythicFirstSurvival, nil, nil,
+			"🌟 First time surviving " .. def.Name .. "!  +%d coins")
+	end
+	local baseDone, mythicDone, mythicTotal = 0, 0, 0
+	for _, dd in ipairs(DisasterConfig.Disasters) do
+		local got = d.DisasterSurvived[dd.Id] == true
+		if dd.Rarity == "Mythic" then
+			mythicTotal += 1
+			if got then
+				mythicDone += 1
+			end
+		elseif got then
+			baseDone += 1
+		end
+	end
+	-- Migration: the old 9-disaster milestone paid the "complete" reward early
+	if d.IndexClaimed["base9"] then
+		d.IndexClaimed["base10"] = true
+	end
+	for _, m in ipairs(I.Milestones) do
+		if baseDone >= m.Need then
+			grantIndexReward(player, "base" .. m.Need, m.Coins, m.Cosmetic, m.Badge,
+				("📖 Disaster Index: %d disasters survived!  +%%d coins"):format(m.Need))
+		end
+	end
+	if mythicTotal > 0 and mythicDone >= mythicTotal then
+		grantIndexReward(player, "mythicAll", I.MythicAll.Coins, I.MythicAll.Cosmetic, I.MythicAll.Badge,
+			"👑 You survived every Mythic disaster!  +%d coins")
+	end
+end
+
+--------------------------------------------------------------------
+-- Revive / Streak Saver
+--------------------------------------------------------------------
+local reviveEvent = ServerStorage:FindFirstChild("RevivePlayer")
+if not reviveEvent then
+	reviveEvent = Instance.new("BindableEvent")
+	reviveEvent.Name = "RevivePlayer"
+	reviveEvent.Parent = ServerStorage
+end
+
+local function roundTimeLeft()
+	if not roundActive then
+		return 0
+	end
+	return math.max(0, DisasterConfig.DisasterDuration - (os.clock() - roundT0))
+end
+
+local function canRevive(player)
+	local info = participants[player]
+	return roundActive
+		and info ~= nil
+		and info.died == true
+		and (reviveUsed[player] or 0) < Offers.ReviveMaxPerRound
+		and roundTimeLeft() >= Offers.ReviveMinTimeLeft
+end
+
+local function revivePlayer(player, restoreStreak)
+	local info = participants[player]
+	local d = data[player]
+	if not info or not d or not canRevive(player) then
+		return false
+	end
+	info.died = false
+	info.diedAt = nil
+	if restoreStreak and restoreStreak > d.Streak then
+		d.Streak = restoreStreak
+	end
+	reviveUsed[player] = (reviveUsed[player] or 0) + 1
+	reviveShield[player] = true
+	pendingRespawn[player] = nil
+	lostStreak[player] = nil
+	reviveEvent:Fire(player) -- LobbyService clears lobby state and brings them back to the island
+	sync(player)
+	Notify:FireClient(player, "💚 Revived! Survive the rest of the round", "good")
+	track(player, "revived", 1)
+	return true
+end
+
+local function onDied(player)
+	local info = participants[player]
+	if roundActive and info and not info.died then
+		info.died = true
+		info.diedAt = os.clock()
+		local d = data[player]
+		if d then
+			local lost = d.Streak
+			local minStreak = Offers.StreakSaveMinStreak
+			if d.Revives > 0 and canRevive(player) then
+				-- A stored Revive is used automatically (short delay lets LobbyService process the death first)
+				d.Revives -= 1
+				Notify:FireClient(player, "💚 Using a stored Revive...", "good")
+				task.delay(0.75, function()
+					if not revivePlayer(player, lost) then
+						d.Revives += 1 -- couldn't apply it (round ended); give it back
+						d.Streak = 0
+					end
+				end)
+			elseif lost >= minStreak and d.StreakSavers > 0 then
+				d.StreakSavers -= 1
+				Notify:FireClient(player, ("🛡️ Streak Saver used! Your %d streak is safe"):format(lost), "good")
+				track(player, "streak_saver_used", lost)
+			else
+				d.Streak = 0
+				if lost >= minStreak then
+					lostStreak[player] = { n = lost, t = os.clock() }
+				end
+				-- Purchase offers: never in a new player's first few rounds
+				if d.Rounds >= Offers.MinRoundsBeforeOffers then
+					local saveable = lost >= minStreak
+					local reviveable = canRevive(player)
+					if saveable or reviveable then
+						DeathOffer:FireClient(player, {
+							Streak = saveable and lost or 0,
+							CanRevive = reviveable,
+							Window = Offers.OfferWindowSeconds,
+						})
+						track(player, "death_offer_shown", lost)
+					end
+				end
+			end
+			sync(player)
+		end
+		track(player, "player_died", math.floor(info.diedAt - info.t0))
+	end
+	if Config.HoldRespawnUntilRoundEnd then
+		pendingRespawn[player] = true
+		if roundActive then
+			SpectateState:FireClient(player, true)
+		else
+			task.delay(3, function()
+				if pendingRespawn[player] then
+					respawn(player)
+				end
+			end)
+		end
+	end
+end
+
+local function watchCharacter(player, char)
+	local hum = char:WaitForChild("Humanoid", 10)
+	if not hum then
+		return
+	end
+	hum.Died:Once(function()
+		onDied(player)
+	end)
+	applyTrail(player)
+	if reviveShield[player] then
+		reviveShield[player] = nil
+		local ff = Instance.new("ForceField")
+		ff.Parent = char
+		task.delay(Offers.ReviveShieldSeconds, function()
+			if ff.Parent then
+				ff:Destroy()
+			end
+		end)
+	end
+end
+
+local function startRound(disasterId, chosen)
+	roundActive = true
+	currentDisaster = disasterId
+	roller = chosen
+	roundT0 = os.clock()
+	reviveUsed = {}
+	lostStreak = {}
+	participants = {}
+	for _, p in ipairs(Players:GetPlayers()) do
+		local hum = p.Character and p.Character:FindFirstChildOfClass("Humanoid")
+		-- AFK players sit out the round in the lobby: they are not
+		-- participants, so they never get survival credit
+		if hum and hum.Health > 0 and data[p] and p:GetAttribute("AFK") ~= true then
+			participants[p] = { t0 = os.clock(), died = false }
+			data[p].Rounds += 1
+			progressQuests(p, "Play")
+			funnelStep(p, "round_seen")
+			if data[p].Rounds >= 2 then
+				funnelStep(p, "second_round")
+			end
+		end
+	end
+end
+
+local function finishRound()
+	if not roundActive then
+		return
+	end
+	roundActive = false
+	local R = Config.Rewards
+	local disaster = currentDisaster
+	local disasterDef = disaster and DisasterConfig.GetDisasterById(disaster)
+	local tier = DisasterConfig.Rarities[(disasterDef and disasterDef.Rarity) or "Common"] or DisasterConfig.Rarities.Common
+	local E = DisasterConfig.Event
+	local eventBonus = (disaster and disaster == DisasterConfig.GetFeaturedId()) and E.CoinBonus or 0
+	local total, survivors = 0, 0
+	for p, info in pairs(participants) do
+		total += 1
+		if not info.died and p.Parent then
+			survivors += 1
+		end
+	end
+	local function friendBonusFor(p)
+		local n = 0
+		for other, oinfo in pairs(participants) do
+			if other ~= p and not oinfo.died and other.Parent and friendCached(p, other) then
+				n += 1
+			end
+		end
+		return math.min(n * Config.Friends.BonusPerFriend, Config.Friends.MaxBonus)
+	end
+	for p, info in pairs(participants) do
+		local d = data[p]
+		if d and p.Parent then
+			local survived = not info.died
+			local coins
+			local firstEver = false
+			local newDisaster = false
+			local friendBonus = 0
+			if survived then
+				d.Streak += 1
+				d.BestStreak = math.max(d.BestStreak, d.Streak)
+				d.Survivals += 1
+				firstEver = d.Survivals == 1
+				if disaster then
+					newDisaster = not d.DisasterSurvived[disaster]
+					d.DisasterSurvived[disaster] = true
+				end
+				coins = math.floor((R.SurviveBase + math.min(d.Streak, R.StreakBonusCap) * R.StreakBonusPerLevel) * tier.Multiplier)
+				if firstEver then
+					coins += R.FirstSurvivalBonus
+				end
+				friendBonus = friendBonusFor(p)
+				coins = math.floor(coins * (1 + friendBonus + eventBonus))
+			else
+				local seconds = (info.diedAt or os.clock()) - info.t0
+				coins = math.min(R.SurviveBase - 1, math.floor(R.ParticipationBase + seconds * R.ParticipationPerSecond))
+			end
+			local isRoller = (p == roller)
+			if isRoller then
+				coins += R.RollerBonus + (tier.RollerBonus or 0)
+			end
+			local given = addCoins(p, coins)
+			if survived then
+				progressQuests(p, "Survive", disaster)
+				progressQuests(p, "Streak")
+				checkIndex(p, disaster, newDisaster)
+				track(p, "round_survived", d.Streak)
+				if firstEver then
+					track(p, "first_survival", 1)
+				end
+			end
+			RoundResult:FireClient(p, {
+				Survived = survived,
+				Coins = given,
+				Streak = d.Streak,
+				BestStreak = d.BestStreak,
+				Survivors = survivors,
+				Total = total,
+				Disaster = disaster,
+				First = firstEver,
+				Roller = isRoller,
+				Rarity = tier.Name,
+				Multiplier = tier.Multiplier,
+				FriendBonus = friendBonus,
+				EventBonus = survived and eventBonus or 0,
+			})
+			funnelStep(p, "first_result")
+		end
+	end
+	participants = {}
+	task.delay(2, function()
+		for p in pairs(pendingRespawn) do
+			respawn(p)
+		end
+	end)
+end
+
+roundEvents.Event:Connect(function(kind, disasterId, extra)
+	if kind == "Started" then
+		startRound(disasterId, extra)
+	elseif kind == "Ended" then
+		finishRound()
+	end
+end)
+
+--------------------------------------------------------------------
+-- Shop / daily / leaderboard remotes
+--------------------------------------------------------------------
+BuyCosmetic.OnServerEvent:Connect(function(player, id)
+	local d = data[player]
+	if not d or type(id) ~= "string" then
+		return
+	end
+	local def = cosmeticById[id]
+	if not def or owns(player, def) then
+		return
+	end
+	if def.RequiresPass then
+		Notify:FireClient(player, "Requires the " .. def.RequiresPass .. " pass", "error")
+		return
+	end
+	if def.IndexReward then
+		Notify:FireClient(player, "Unlock this by completing the Disaster Index", "error")
+		return
+	end
+	if d.Coins < def.Price then
+		Notify:FireClient(player, "Not enough coins", "error")
+		return
+	end
+	d.Coins -= def.Price
+	d.Owned[id] = true
+	d.Equipped = id
+	sync(player)
+	applyTrail(player)
+	Notify:FireClient(player, "Unlocked " .. def.Name .. "!", "good")
+	track(player, "cosmetic_bought", def.Price)
+end)
+
+EquipCosmetic.OnServerEvent:Connect(function(player, id)
+	local d = data[player]
+	if not d or type(id) ~= "string" then
+		return
+	end
+	if id ~= "" then
+		local def = cosmeticById[id]
+		if not def or not owns(player, def) then
+			return
+		end
+	end
+	d.Equipped = id
+	sync(player)
+	applyTrail(player)
+end)
+
+ClaimDaily.OnServerEvent:Connect(function(player)
+	local d = data[player]
+	if not d then
+		return
+	end
+	local ready, _, reward = dailyInfo(d)
+	if not ready then
+		return
+	end
+	local now = os.time()
+	if now - d.LastDaily > Config.Daily.ResetHours * 3600 then
+		d.DailyStreak = 1
+	else
+		d.DailyStreak += 1
+	end
+	d.LastDaily = now
+	local given = addCoins(player, reward)
+	Notify:FireClient(player, ("Daily reward: +%d coins (day %d)"):format(given, d.DailyStreak), "good")
+	track(player, "daily_claimed", d.DailyStreak)
+end)
+
+PromptPass.OnServerEvent:Connect(function(player, key)
+	for _, def in ipairs(Config.Passes) do
+		if def.Key == key then
+			if def.Id > 0 then
+				MarketplaceService:PromptGamePassPurchase(player, def.Id)
+			else
+				Notify:FireClient(player, "This pass isn't set up yet", "error")
+			end
+			return
+		end
+	end
+end)
+
+PromptProduct.OnServerEvent:Connect(function(player, key)
+	for _, def in ipairs(Config.Products) do
+		if def.Key == key then
+			if def.Id > 0 then
+				MarketplaceService:PromptProductPurchase(player, def.Id)
+			else
+				Notify:FireClient(player, "This item isn't set up yet", "error")
+			end
+			return
+		end
+	end
+end)
+
+MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passId, wasPurchased)
+	if not wasPurchased or not passes[player] then
+		return
+	end
+	for _, def in ipairs(Config.Passes) do
+		if def.Id == passId then
+			passes[player][def.Key] = true
+			Notify:FireClient(player, "Thanks! " .. def.Name .. " unlocked", "good")
+			track(player, "pass_bought", 1)
+			sync(player)
+			applyTrail(player)
+		end
+	end
+end)
+
+MarketplaceService.ProcessReceipt = function(receipt)
+	local player = Players:GetPlayerByUserId(receipt.PlayerId)
+	local d = player and data[player]
+	if not player or not d then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	-- Their data failed to load, so nothing will be saved. Roblox retries the receipt
+	-- later instead of the purchase being granted and then lost.
+	if noSave[player] then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	local pid = tostring(receipt.PurchaseId)
+	if d.Receipts[pid] then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	local product
+	for _, def in ipairs(Config.Products) do
+		if def.Id == receipt.ProductId then
+			product = def
+		end
+	end
+	if not product then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local kind = product.Kind or "Coins"
+	local before = { Coins = d.Coins, Streak = d.Streak, StreakSavers = d.StreakSavers, Revives = d.Revives }
+	local after -- side effects that run only once the purchase is safely saved
+	local message = "Thanks for your purchase!"
+
+	if kind == "Coins" then
+		d.Coins += product.Coins
+		message = ("+%d coins!"):format(product.Coins)
+	elseif kind == "StreakSaver" then
+		local w = lostStreak[player]
+		if w and os.clock() - w.t <= Offers.OfferWindowSeconds + 5 and d.Streak < w.n then
+			d.Streak = w.n
+			lostStreak[player] = nil
+			message = ("🛡️ Streak restored to %d!"):format(w.n)
+		else
+			d.StreakSavers += 1
+			message = "🛡️ Streak Saver stored - it protects your next streak"
+		end
+	elseif kind == "Revive" then
+		if canRevive(player) then
+			local restore = lostStreak[player] and lostStreak[player].n
+			after = function()
+				if not revivePlayer(player, restore) then
+					d.Revives += 1 -- too late to use now; keep it for next time
+					sync(player)
+				end
+			end
+			message = "💚 Reviving you..."
+		else
+			d.Revives += 1
+			message = "💚 Revive stored - it will be used the next time you're eliminated"
+		end
+	elseif kind == "ServerLuck" then
+		local total = math.min((ServerStorage:GetAttribute("LuckRounds") or 0) + (product.Rounds or 3), Offers.MaxLuckRounds)
+		local mult = product.Multiplier or 3
+		after = function()
+			ServerStorage:SetAttribute("LuckRounds", total)
+			ServerStorage:SetAttribute("LuckMultiplier", mult)
+			ServerStorage:SetAttribute("LuckBuyer", player.DisplayName)
+			for _, p in ipairs(Players:GetPlayers()) do
+				Notify:FireClient(p, ("🍀 %s boosted server luck! Rare disasters %dx likelier for %d rounds"):format(player.DisplayName, mult, total), "good")
+				sync(p)
+			end
+		end
+		message = "🍀 Server luck boosted - everyone benefits!"
+	else
+		-- Add-on products (LobbyUpgrade: disaster summons, Robux eggs): a BindableFunction named after
+		-- the Kind in ServerStorage > ExtraProductHandlers. It runs only once the receipt is saved.
+		local handlers = ServerStorage:FindFirstChild("ExtraProductHandlers")
+		local handler = handlers and handlers:FindFirstChild(kind)
+		if not (handler and handler:IsA("BindableFunction")) then
+			return Enum.ProductPurchaseDecision.NotProcessedYet
+		end
+		after = function()
+			local ok, msg = pcall(handler.Invoke, handler, player, product)
+			if not ok then
+				warn("[ProgressionServer] " .. kind .. " handler failed: " .. tostring(msg))
+			elseif type(msg) == "string" then
+				Notify:FireClient(player, msg, "good")
+			end
+		end
+	end
+
+	d.Receipts[pid] = true
+	if not saveData(player) then
+		d.Receipts[pid] = nil
+		d.Coins, d.Streak, d.StreakSavers, d.Revives = before.Coins, before.Streak, before.StreakSavers, before.Revives
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	if after then
+		after()
+	end
+	sync(player)
+	Notify:FireClient(player, message, "good")
+	track(player, "product_bought", product.Coins or 1)
+	track(player, "product_" .. tostring(product.Key), 1)
+	return Enum.ProductPurchaseDecision.PurchaseGranted
+end
+
+local boardCache = {}
+local nameCache = {}
+GetLeaderboard.OnServerInvoke = function(_, kind)
+	if kind ~= "Streak" and kind ~= "Survivals" then
+		return {}
+	end
+	local cache = boardCache[kind]
+	if cache and os.clock() - cache.t < 60 then
+		return cache.rows
+	end
+	local board = kind == "Streak" and streakBoard or survivalBoard
+	local rows = {}
+	local ok, pages = pcall(function()
+		return board:GetSortedAsync(false, 10)
+	end)
+	if ok then
+		local ok2, page = pcall(function()
+			return pages:GetCurrentPage()
+		end)
+		if ok2 then
+			for _, entry in ipairs(page) do
+				local uid = tonumber(entry.key)
+				local name = uid and nameCache[uid]
+				if uid and not name then
+					local okN, n = pcall(function()
+						return Players:GetNameFromUserIdAsync(uid)
+					end)
+					name = okN and n or "Player"
+					nameCache[uid] = name
+				end
+				table.insert(rows, { Name = name or "Player", Value = entry.value })
+			end
+		end
+	end
+	boardCache[kind] = { t = os.clock(), rows = rows }
+	return rows
+end
+
+--------------------------------------------------------------------
+-- Player lifecycle
+--------------------------------------------------------------------
+local function setupLeaderstats(player)
+	local ls = Instance.new("Folder")
+	ls.Name = "leaderstats"
+	local coins = Instance.new("IntValue")
+	coins.Name = "Coins"
+	coins.Parent = ls
+	local streak = Instance.new("IntValue")
+	streak.Name = "Streak"
+	streak.Parent = ls
+	ls.Parent = player
+end
+
+local function onPlayerAdded(player)
+	setupLeaderstats(player)
+	local d = loadData(player)
+	if player.Parent ~= Players then
+		return
+	end
+	data[player] = d
+	if not d.Seen then
+		firstJoin[player] = true
+		d.Seen = true
+	end
+	ensureQuests(d)
+	checkPasses(player)
+	-- Credit Disaster Index milestones that existing players already earned before this update
+	task.delay(8, function()
+		if data[player] then
+			checkIndex(player, "_catchup", true)
+		end
+	end)
+	player.CharacterAdded:Connect(function(char)
+		watchCharacter(player, char)
+	end)
+	if player.Character then
+		task.spawn(watchCharacter, player, player.Character)
+	end
+	-- Toggling AFK on mid-round removes them from the round: no
+	-- survival credit for sitting out in the lobby
+	player:GetAttributeChangedSignal("AFK"):Connect(function()
+		if player:GetAttribute("AFK") == true and participants[player] then
+			participants[player] = nil
+		end
+	end)
+	sync(player)
+	track(player, "session_start", d.Rounds)
+	funnelStep(player, "joined")
+	task.spawn(cacheFriends, player)
+end
+
+Players.PlayerAdded:Connect(onPlayerAdded)
+for _, p in ipairs(Players:GetPlayers()) do
+	task.spawn(onPlayerAdded, p)
+end
+
+RequestData.OnServerEvent:Connect(function(player)
+	local waited = 0
+	while not data[player] and player.Parent == Players and waited < 30 do
+		task.wait(0.25)
+		waited += 0.25
+	end
+	local snap = snapshot(player)
+	if snap then
+		snap.FirstJoin = firstJoin[player] == true
+		firstJoin[player] = nil
+		DataUpdate:FireClient(player, snap)
+	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	saveData(player)
+	saveBoards(player)
+	data[player] = nil
+	noSave[player] = nil
+	passes[player] = nil
+	participants[player] = nil
+	pendingRespawn[player] = nil
+	firstJoin[player] = nil
+	lostStreak[player] = nil
+	reviveUsed[player] = nil
+	reviveShield[player] = nil
+end)
+
+-- Autosave every 2 minutes, spaced out to stay inside DataStore limits
+task.spawn(function()
+	while true do
+		task.wait(120)
+		for _, p in ipairs(Players:GetPlayers()) do
+			saveData(p)
+			saveBoards(p)
+			task.wait(0.5)
+		end
+	end
+end)
+
+game:BindToClose(function()
+	local pending = 0
+	for _, p in ipairs(Players:GetPlayers()) do
+		pending += 1
+		task.spawn(function()
+			saveData(p)
+			saveBoards(p)
+			pending -= 1
+		end)
+	end
+	local startedAt = os.clock()
+	while pending > 0 and os.clock() - startedAt < 25 do
+		task.wait(0.1)
+	end
+end)]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_PetService"><Properties><string name="Name">PetService</string><bool name="Disabled">true</bool><token name="RunContext">0</token><ProtectedString name="Source"><![CDATA[--[[
+	PetService  (Script)
+	Put in: ServerScriptService
+
+	Server side of the pet system. The server decides everything - the client only asks:
+	  * Hatching an egg: spends coins, rolls the pet with server RNG, saves it.
+	  * Equipping / unequipping (max PetConfig.MaxEquipped).
+	  * Health boost: when a disaster starts, every player's equipped pets add max health
+	    (and matching current health). It is removed again when the round ends.
+
+	Needs the patched ProgressionServer (it creates ServerStorage > ProgressionAPI, which
+	is how this script spends coins and reads/writes the pets save data).
+
+	Remotes created here (ReplicatedStorage > PetRemotes):
+	  PetRequest (RemoteFunction)  client -> server: "State" | "Hatch", eggId | "Equip", petId | "Unequip", petId | "SetHidden", bool
+	  PetBoost   (RemoteEvent)     server -> client: (hpAdded, disasterId) when a boost is applied
+	Player attribute "EquippedPets" = "PetA,PetB,PetC" (replicates, so everyone can see your pets).
+	Character attribute "PetHealthBoost" = HP currently added by pets.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+
+local PetConfig = require(ReplicatedStorage:WaitForChild("PetConfig"))
+local DisasterConfig = require(ReplicatedStorage:WaitForChild("DisasterAssets"):WaitForChild("DisasterConfig"))
+
+local API = ServerStorage:WaitForChild("ProgressionAPI", 20)
+if not API then
+	warn("[PetService] ServerStorage.ProgressionAPI not found - did you replace ProgressionServer with the patched version?")
+	return
+end
+local roundEvents = ServerStorage:WaitForChild("RoundEvents")
+
+-- Sanity check the config against the real disasters (prints a warning if an id is misspelled)
+for petId, pet in pairs(PetConfig.Pets) do
+	for disasterId in pairs(pet.Covers) do
+		if not DisasterConfig.GetDisasterById(disasterId) then
+			warn("[PetService] " .. petId .. " covers unknown disaster '" .. disasterId .. "'")
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- Remotes
+--------------------------------------------------------------------
+local remotes = Instance.new("Folder")
+remotes.Name = "PetRemotes"
+local Request = Instance.new("RemoteFunction")
+Request.Name = "PetRequest"
+Request.Parent = remotes
+local BoostEvent = Instance.new("RemoteEvent")
+BoostEvent.Name = "PetBoost"
+BoostEvent.Parent = remotes
+remotes.Parent = ReplicatedStorage
+
+--------------------------------------------------------------------
+-- Pet data (authoritative copy per player, written through to the ProgressionServer save)
+--------------------------------------------------------------------
+local cache = {}      -- [Player] = { Owned = { [petId] = true }, Equipped = { petId, ... } }
+local busy = {}       -- [Player] = true while a hatch is being processed
+local lastCall = {}   -- [Player] = os.clock() of the last request (simple rate limit)
+local rng = Random.new()
+
+local function sanitize(raw)
+	local owned, equipped = {}, {}
+	if type(raw) == "table" then
+		if type(raw.Owned) == "table" then
+			for id, value in pairs(raw.Owned) do
+				if value and PetConfig.Pets[id] then
+					owned[id] = true
+				end
+			end
+		end
+		if type(raw.Equipped) == "table" then
+			for _, id in ipairs(raw.Equipped) do
+				if type(id) == "string" and owned[id] and not table.find(equipped, id) and #equipped < PetConfig.MaxEquipped then
+					table.insert(equipped, id)
+				end
+			end
+		end
+	end
+	return { Owned = owned, Equipped = equipped, Hidden = type(raw) == "table" and raw.Hidden == true }
+end
+
+local function save(player)
+	API:Invoke("SetPets", player, cache[player])
+end
+
+local function publishEquipped(player)
+	local pets = cache[player]
+	if pets then
+		player:SetAttribute("EquippedPets", table.concat(pets.Equipped, ","))
+	end
+end
+
+local function stateFor(player)
+	local pets = cache[player]
+	local owned, equipped = {}, {}
+	for id in pairs(pets.Owned) do
+		owned[id] = true
+	end
+	for _, id in ipairs(pets.Equipped) do
+		table.insert(equipped, id)
+	end
+	return { ok = true, owned = owned, equipped = equipped, hidden = pets.Hidden == true }
+end
+
+local function loadPlayer(player)
+	local raw
+	for _ = 1, 120 do -- wait for the ProgressionServer to finish loading this player's save (up to ~60s)
+		if not player.Parent then
+			return
+		end
+		raw = API:Invoke("GetPets", player)
+		if raw ~= nil then
+			break
+		end
+		task.wait(0.5)
+	end
+	if raw == nil or not player.Parent then
+		return
+	end
+	cache[player] = sanitize(raw)
+	save(player) -- writes back the cleaned-up version
+	publishEquipped(player)
+end
+
+--------------------------------------------------------------------
+-- Hatching
+--------------------------------------------------------------------
+local function pickPet(egg)
+	local total = 0
+	for _, petId in ipairs(egg.Pets) do
+		total = total + PetConfig.Pets[petId].Weight
+	end
+	local roll = rng:NextNumber() * total
+	for _, petId in ipairs(egg.Pets) do
+		roll = roll - PetConfig.Pets[petId].Weight
+		if roll <= 0 then
+			return petId
+		end
+	end
+	return egg.Pets[#egg.Pets]
+end
+
+local function hatch(player, eggId, free)
+	local egg = type(eggId) == "string" and PetConfig.GetEgg(eggId) or nil
+	if not egg then
+		return { ok = false, err = "BadRequest" }
+	end
+	if busy[player] then
+		return { ok = false, err = "Busy" }
+	end
+	busy[player] = true
+
+	local result
+	local pets = cache[player]
+	local petId = pickPet(egg) -- roll first, then charge; nothing is granted unless the payment goes through
+	if not free and API:Invoke("Spend", player, egg.Cost) ~= true then -- free = already paid in Robux
+		result = { ok = false, err = "NotEnoughCoins" }
+	else
+		local isNew = not pets.Owned[petId]
+		local refund = 0
+		local autoEquipped = false
+		if isNew then
+			pets.Owned[petId] = true
+			if #pets.Equipped < PetConfig.MaxEquipped then
+				table.insert(pets.Equipped, petId)
+				autoEquipped = true
+			end
+		else
+			refund = math.floor(egg.Cost * PetConfig.DuplicateRefundPct)
+			if refund > 0 then
+				API:Invoke("AddCoinsRaw", player, refund)
+			end
+		end
+		save(player)
+		publishEquipped(player)
+		result = stateFor(player)
+		result.petId = petId
+		result.isNew = isNew
+		result.refund = refund
+		result.autoEquipped = autoEquipped
+	end
+
+	busy[player] = nil
+	return result
+end
+
+--------------------------------------------------------------------
+-- Equip / unequip
+--------------------------------------------------------------------
+local function equip(player, petId)
+	local pets = cache[player]
+	if type(petId) ~= "string" or not pets.Owned[petId] then
+		return { ok = false, err = "NotOwned" }
+	end
+	if table.find(pets.Equipped, petId) then
+		return stateFor(player)
+	end
+	if #pets.Equipped >= PetConfig.MaxEquipped then
+		return { ok = false, err = "SlotsFull" }
+	end
+	table.insert(pets.Equipped, petId)
+	save(player)
+	publishEquipped(player)
+	return stateFor(player)
+end
+
+local function unequip(player, petId)
+	local pets = cache[player]
+	local index = type(petId) == "string" and table.find(pets.Equipped, petId) or nil
+	if index then
+		table.remove(pets.Equipped, index)
+		save(player)
+		publishEquipped(player)
+	end
+	return stateFor(player)
+end
+
+-- Robux eggs (LobbyUpgrade shop): hatch without spending coins. Server-only.
+do
+	local grant = ServerStorage:FindFirstChild("PetGrantHatch") or Instance.new("BindableFunction")
+	grant.Name = "PetGrantHatch"
+	grant.OnInvoke = function(player, eggId)
+		local waited = 0
+		while busy[player] and waited < 5 do -- a coin hatch is still running
+			waited += task.wait(0.1)
+		end
+		if not cache[player] then
+			return { ok = false, err = "Loading" }
+		end
+		return hatch(player, eggId, true)
+	end
+	grant.Parent = ServerStorage
+end
+
+Request.OnServerInvoke = function(player, action, arg)
+	if type(action) ~= "string" then
+		return { ok = false, err = "BadRequest" }
+	end
+	local now = os.clock()
+	if now - (lastCall[player] or 0) < 0.15 then
+		return { ok = false, err = "Cooldown" }
+	end
+	lastCall[player] = now
+	if not cache[player] then
+		return { ok = false, err = "Loading" }
+	end
+	if action == "State" then
+		return stateFor(player)
+	elseif action == "Hatch" then
+		return hatch(player, arg)
+	elseif action == "Equip" then
+		return equip(player, arg)
+	elseif action == "Unequip" then
+		return unequip(player, arg)
+	elseif action == "SetHidden" then
+		-- personal display setting: hide my own pets from my own screen (saved)
+		cache[player].Hidden = arg == true
+		save(player)
+		return stateFor(player)
+	end
+	return { ok = false, err = "BadRequest" }
+end
+
+--------------------------------------------------------------------
+-- Health boost during disasters
+--   The boost is worked out once when the disaster starts (snapshot), so swapping pets
+--   mid-round doesn't change anything until the next round.
+--------------------------------------------------------------------
+local activeDisaster = nil
+local snapshot = {}  -- [Player] = HP to add this round
+local boosted = {}   -- [Humanoid] = MaxHealth it had before the boost
+
+local function applyBoost(player, announce)
+	local total = snapshot[player]
+	if not total or total <= 0 then
+		return
+	end
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 or boosted[humanoid] then
+		return
+	end
+	boosted[humanoid] = humanoid.MaxHealth
+	humanoid.MaxHealth = humanoid.MaxHealth + total
+	humanoid.Health = humanoid.Health + total
+	character:SetAttribute("PetHealthBoost", total)
+	if announce then
+		BoostEvent:FireClient(player, total, activeDisaster)
+	end
+end
+
+local function clearBoosts()
+	for humanoid, baseMax in pairs(boosted) do
+		boosted[humanoid] = nil
+		if humanoid.Parent then
+			humanoid.MaxHealth = baseMax
+			if humanoid.Health > baseMax then
+				humanoid.Health = baseMax
+			end
+			humanoid.Parent:SetAttribute("PetHealthBoost", nil)
+		end
+	end
+	table.clear(snapshot)
+	activeDisaster = nil
+end
+
+roundEvents.Event:Connect(function(kind, disasterId)
+	if kind == "Started" then
+		clearBoosts() -- safety: never stack on a round that didn't end cleanly
+		activeDisaster = disasterId
+		for _, player in ipairs(Players:GetPlayers()) do
+			local pets = cache[player]
+			if pets and #pets.Equipped > 0 then
+				snapshot[player] = PetConfig.TotalHealth(pets.Equipped, disasterId)
+				applyBoost(player, true)
+			end
+		end
+	elseif kind == "Ended" then
+		clearBoosts()
+	end
+end)
+
+--------------------------------------------------------------------
+-- Player lifecycle
+--------------------------------------------------------------------
+local function onPlayer(player)
+	task.spawn(loadPlayer, player)
+	player.CharacterAdded:Connect(function(character)
+		-- revived / respawned during a disaster: they still get their pets' boost
+		if activeDisaster and snapshot[player] then
+			character:WaitForChild("Humanoid", 5)
+			applyBoost(player, false)
+		end
+	end)
+end
+
+Players.PlayerAdded:Connect(onPlayer)
+for _, player in ipairs(Players:GetPlayers()) do
+	onPlayer(player)
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	cache[player] = nil
+	busy[player] = nil
+	lastCall[player] = nil
+	snapshot[player] = nil
+end)]]></ProtectedString></Properties></Item><Item class="LocalScript" referent="RBX_DisasterSelectorClient"><Properties><string name="Name">DisasterSelectorClient</string><ProtectedString name="Source"><![CDATA[--[[
+	DisasterSelectorClient (LocalScript)
+	Builds and drives the disaster selector UI: roulette animation, roll button,
+	dice spin, disaster banners, screen flashes and sound effects.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local assets = ReplicatedStorage:WaitForChild("DisasterAssets")
+local remotes = assets:WaitForChild("Remotes")
+local soundsFolder = assets:WaitForChild("Sounds")
+local config = require(assets:WaitForChild("DisasterConfig"))
+
+local RoundStatus = remotes:WaitForChild("RoundStatus")
+local SelectionStarted = remotes:WaitForChild("SelectionStarted")
+local PlayerSelected = remotes:WaitForChild("PlayerSelected")
+local RollRequested = remotes:WaitForChild("RollRequested")
+local RollStarted = remotes:WaitForChild("RollStarted")
+local DisasterRevealed = remotes:WaitForChild("DisasterRevealed")
+local DisasterStarted = remotes:WaitForChild("DisasterStarted")
+local DisasterEnded = remotes:WaitForChild("DisasterEnded")
+
+-- Progression extras (luck chip + odds line). Optional: the script still works without them.
+local ProgressionConfig = ReplicatedStorage:FindFirstChild("ProgressionConfig")
+	and require(ReplicatedStorage.ProgressionConfig)
+local ProgressionRemotes = ReplicatedStorage:WaitForChild("ProgressionRemotes", 10)
+local PromptProduct = ProgressionRemotes and ProgressionRemotes:FindFirstChild("PromptProduct")
+
+--------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------
+
+local function create(className, props, children)
+	local inst = Instance.new(className)
+	for key, value in pairs(props) do
+		inst[key] = value
+	end
+	for _, child in ipairs(children or {}) do
+		child.Parent = inst
+	end
+	return inst
+end
+
+local function makeSound(name, parent)
+	local template = soundsFolder:FindFirstChild(name)
+	local sound = Instance.new("Sound")
+	sound.Name = name
+	sound.Volume = 0.8
+	if template then
+		sound.SoundId = template.SoundId
+	end
+	sound.Parent = parent
+	return sound
+end
+
+local GOLD = Color3.fromRGB(255, 200, 80)
+local PANEL_COLOR = Color3.fromRGB(22, 22, 34)
+
+--------------------------------------------------------------------
+-- UI construction
+--------------------------------------------------------------------
+
+local gui = create("ScreenGui", {
+	Name = "DisasterSelectorGui",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 10,
+})
+gui.Parent = playerGui
+
+-- Sounds
+local drumroll = makeSound("DrumRoll", gui)
+drumroll.Looped = true
+local tickSound = Instance.new("Sound")
+tickSound.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+tickSound.Volume = 0.4
+tickSound.Parent = gui
+local whoosh = makeSound("Whoosh", gui)
+local fanfare = makeSound("Fanfare", gui)
+
+local function playFanfare()
+	fanfare:Stop()
+	fanfare:Play()
+	-- Safety net: never let a long fanfare track keep playing
+	-- on top of the background music.
+	task.delay(6, function()
+		if fanfare.IsPlaying then
+			fanfare:Stop()
+		end
+	end)
+end
+local diceSound = makeSound("DiceRoll", gui)
+
+-- Background music
+local calmMusic = makeSound("CalmMusic", gui)
+calmMusic.Looped = true
+calmMusic.Volume = 0.35
+local disasterMusic = makeSound("DisasterMusic", gui)
+disasterMusic.Looped = true
+disasterMusic.Volume = 0.6
+
+local CALM_VOLUME = 0.35
+local DISASTER_VOLUME = 0.6
+
+-- Track the active volume tween per sound so we can cancel stale ones.
+-- A cancelled tween's Completed still fires (with Cancelled state), which
+-- previously caused sounds to keep playing and overlap each other.
+local activeTweens = {}
+
+local function fadeTo(sound, volume, duration, onDone)
+	-- Cancel any tween already running on this sound
+	local oldTween = activeTweens[sound]
+	if oldTween then
+		oldTween:Cancel()
+		activeTweens[sound] = nil
+	end
+
+	local tween = TweenService:Create(sound, TweenInfo.new(duration), {
+		Volume = volume,
+	})
+	activeTweens[sound] = tween
+	tween.Completed:Once(function(state)
+		if activeTweens[sound] == tween then
+			activeTweens[sound] = nil
+			-- Only act if the tween actually finished (not cancelled)
+			if state == Enum.PlaybackState.Completed and onDone then
+				onDone()
+			end
+		end
+	end)
+	tween:Play()
+end
+
+local function switchMusic(toSound, targetVolume, fadeOutTime, fadeInTime)
+	-- Fade out and stop every other music track
+	for _, s in ipairs({ calmMusic, disasterMusic }) do
+		if s ~= toSound and s.IsPlaying then
+			fadeTo(s, 0, fadeOutTime, function()
+				s:Stop()
+			end)
+		end
+	end
+	-- Fade in (or continue) the target track
+	if not toSound.IsPlaying then
+		toSound.Volume = 0
+		toSound:Play()
+	end
+	fadeTo(toSound, targetVolume, fadeInTime)
+end
+
+local function playCalmMusic()
+	switchMusic(calmMusic, CALM_VOLUME, 0.8, 1.5)
+end
+
+local function playDisasterMusic()
+	switchMusic(disasterMusic, DISASTER_VOLUME, 0.8, 1)
+end
+
+-- Start with the calm island music
+playCalmMusic()
+
+-- Fullscreen flash frame
+local flash = create("Frame", {
+	Name = "Flash",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Color3.new(1, 1, 1),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ZIndex = 100,
+})
+flash.Parent = gui
+
+local function doFlash(color, strength)
+	flash.BackgroundColor3 = color
+	flash.BackgroundTransparency = 1 - (strength or 0.6)
+	TweenService:Create(flash, TweenInfo.new(0.45, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+end
+
+-- Top status bar
+local topBar = create("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, 12),
+	Size = UDim2.fromOffset(440, 44),
+	BackgroundColor3 = PANEL_COLOR,
+	BackgroundTransparency = 0.2,
+	BorderSizePixel = 0,
+}, {
+	create("UICorner", { CornerRadius = UDim.new(0, 12) }),
+	create("UIStroke", { Thickness = 2, Color = GOLD, Transparency = 0.4 }),
+})
+topBar.Parent = gui
+
+local statusLabel = create("TextLabel", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 20,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "Waiting for the next round...",
+})
+statusLabel.Parent = topBar
+
+-- Selection panel (roulette)
+local selectionPanel = create("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.42),
+	Size = UDim2.fromOffset(500, 240),
+	BackgroundColor3 = PANEL_COLOR,
+	BackgroundTransparency = 0.1,
+	BorderSizePixel = 0,
+	Visible = false,
+}, {
+	create("UICorner", { CornerRadius = UDim.new(0, 20) }),
+	create("UIStroke", { Thickness = 3, Color = GOLD, Transparency = 0.3 }),
+})
+selectionPanel.Parent = gui
+
+local selectionScale = create("UIScale", { Scale = 0 })
+selectionScale.Parent = selectionPanel
+
+create("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 46),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 22,
+	TextColor3 = GOLD,
+	Text = "🎯 SELECTING THE ROLLER",
+}, {}).Parent = selectionPanel
+
+local rouletteName = create("TextLabel", {
+	Position = UDim2.new(0, 0, 0, 60),
+	Size = UDim2.new(1, 0, 0, 90),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 44,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "???",
+}, {})
+rouletteName.Parent = selectionPanel
+
+create("TextLabel", {
+	Position = UDim2.new(0, 0, 0, 168),
+	Size = UDim2.new(1, 0, 0, 40),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.Gotham,
+	TextSize = 17,
+	TextColor3 = Color3.fromRGB(180, 180, 200),
+	Text = "Who will roll the disaster dice?",
+}, {}).Parent = selectionPanel
+
+-- Roll panel (shown only to the chosen player)
+local rollPanel = create("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.42),
+	Size = UDim2.fromOffset(500, 300),
+	BackgroundColor3 = PANEL_COLOR,
+	BackgroundTransparency = 0.1,
+	BorderSizePixel = 0,
+	Visible = false,
+}, {
+	create("UICorner", { CornerRadius = UDim.new(0, 20) }),
+	create("UIStroke", { Thickness = 3, Color = Color3.fromRGB(120, 200, 255), Transparency = 0.3 }),
+})
+rollPanel.Parent = gui
+
+local rollScale = create("UIScale", { Scale = 0 })
+rollScale.Parent = rollPanel
+
+create("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 52),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 24,
+	TextColor3 = Color3.fromRGB(120, 200, 255),
+	Text = "🎲 YOU ROLL THE DISASTER DICE!",
+}, {}).Parent = rollPanel
+
+local rollResult = create("TextLabel", {
+	Position = UDim2.new(0, 0, 0, 62),
+	Size = UDim2.new(1, 0, 0, 80),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 38,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "",
+}, {})
+rollResult.Parent = rollPanel
+
+local rollButton = create("TextButton", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, 158),
+	Size = UDim2.fromOffset(240, 70),
+	BackgroundColor3 = Color3.fromRGB(255, 80, 80),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 32,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "🎲 ROLL!",
+	BorderSizePixel = 0,
+	AutoButtonColor = true,
+}, {
+	create("UICorner", { CornerRadius = UDim.new(0, 14) }),
+	create("UIStroke", { Thickness = 3, Color = Color3.fromRGB(255, 160, 160), Transparency = 0.5 }),
+})
+rollButton.Parent = rollPanel
+
+local autoRollLabel = create("TextLabel", {
+	Position = UDim2.new(0, 0, 0, 244),
+	Size = UDim2.new(1, 0, 0, 36),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.Gotham,
+	TextSize = 17,
+	TextColor3 = Color3.fromRGB(180, 180, 200),
+	Text = "",
+}, {})
+autoRollLabel.Parent = rollPanel
+
+-- Odds line under the ROLL button (anticipation + honesty about the odds)
+local oddsLabel = create("TextLabel", {
+	Position = UDim2.new(0, 0, 0, 230),
+	Size = UDim2.new(1, 0, 0, 20),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextColor3 = Color3.fromRGB(200, 215, 255),
+	Text = "",
+}, {})
+oddsLabel.Parent = rollPanel
+
+local function currentLuck()
+	if (ReplicatedStorage:GetAttribute("LuckRounds") or 0) > 0 then
+		return ReplicatedStorage:GetAttribute("LuckMultiplier") or 3
+	end
+	return 1
+end
+
+local function oddsText()
+	local luck = currentLuck()
+	local parts = {}
+	for _, tierName in ipairs(config.RarityOrder) do
+		local pct = config.GetTierChance(tierName, luck) * 100
+		table.insert(parts, (pct < 1 and "%s %.2f%%" or "%s %.1f%%"):format(tierName, pct))
+	end
+	return (luck > 1 and "🍀 " or "Odds: ") .. table.concat(parts, "  ·  ")
+end
+
+-- Luck chip: a single, optional offer shown only during the intermission pause,
+-- and never to brand-new players.
+local luckChip = create("TextButton", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, 62),
+	Size = UDim2.fromOffset(300, 30),
+	BackgroundColor3 = Color3.fromRGB(40, 120, 70),
+	BackgroundTransparency = 0.15,
+	Font = Enum.Font.GothamBold,
+	TextSize = 14,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "",
+	Visible = false,
+	BorderSizePixel = 0,
+}, {
+	create("UICorner", { CornerRadius = UDim.new(0, 10) }),
+})
+luckChip.Parent = gui
+
+local function updateLuckChip(show)
+	local luckProduct
+	if ProgressionConfig then
+		for _, p in ipairs(ProgressionConfig.Products) do
+			if p.Key == "ServerLuck" then
+				luckProduct = p
+			end
+		end
+	end
+	local minRounds = ProgressionConfig and ProgressionConfig.Offers.MinRoundsBeforeOffers or 5
+	local ready = show and PromptProduct and luckProduct and luckProduct.Id > 0
+		and (player:GetAttribute("Rounds") or 0) >= minRounds
+	luckChip.Visible = ready == true
+	if ready then
+		local left = ReplicatedStorage:GetAttribute("LuckRounds") or 0
+		luckChip.Text = left > 0 and ("🍀 Server luck active: " .. left .. " left - tap to extend")
+			or "🍀 Boost everyone's luck for 3 rounds"
+	end
+end
+
+luckChip.Activated:Connect(function()
+	if PromptProduct then
+		PromptProduct:FireServer("ServerLuck")
+	end
+end)
+
+-- Disaster banner
+local banner = create("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, -140),
+	Size = UDim2.new(1, 0, 0, 110),
+	BackgroundColor3 = Color3.fromRGB(255, 120, 40),
+	BackgroundTransparency = 0.05,
+	BorderSizePixel = 0,
+	Visible = false,
+}, {
+	create("UICorner", { CornerRadius = UDim.new(0, 18) }),
+	create("UIStroke", { Thickness = 3, Color = Color3.new(1, 1, 1), Transparency = 0.5 }),
+})
+banner.Parent = gui
+
+local bannerEmoji = create("TextLabel", {
+	Position = UDim2.new(0, 30, 0, 0),
+	Size = UDim2.fromOffset(80, 110),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 54,
+	Text = "🌪",
+}, {})
+bannerEmoji.Parent = banner
+
+local bannerTitle = create("TextLabel", {
+	Position = UDim2.new(0, 120, 0, 12),
+	Size = UDim2.new(1, -140, 0, 50),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 40,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "DISASTER",
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, {})
+bannerTitle.Parent = banner
+
+local bannerDesc = create("TextLabel", {
+	Position = UDim2.new(0, 122, 0, 62),
+	Size = UDim2.new(1, -140, 0, 34),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.Gotham,
+	TextSize = 20,
+	TextColor3 = Color3.fromRGB(255, 245, 230),
+	Text = "",
+	TextXAlignment = Enum.TextXAlignment.Left,
+}, {})
+bannerDesc.Parent = banner
+
+--------------------------------------------------------------------
+-- Animation helpers
+--------------------------------------------------------------------
+
+local function popIn(panel, scale)
+	panel.Visible = true
+	scale.Scale = 0
+	TweenService:Create(scale, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Scale = 1,
+	}):Play()
+end
+
+local function popOut(panel, scale)
+	local tween = TweenService:Create(scale, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+		Scale = 0,
+	})
+	tween:Play()
+	tween.Completed:Once(function()
+		panel.Visible = false
+	end)
+end
+
+local function popLabel(label)
+	local scale = label:FindFirstChild("PopScale")
+	if not scale then
+		scale = create("UIScale", { Scale = 1 })
+		scale.Name = "PopScale"
+		scale.Parent = label
+	end
+	scale.Scale = 1
+	local pop = TweenService:Create(scale, TweenInfo.new(0.18, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+		Scale = 1.25,
+	})
+	pop:Play()
+	pop.Completed:Once(function()
+		TweenService:Create(scale, TweenInfo.new(0.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Scale = 1,
+		}):Play()
+	end)
+end
+
+local function shakeBanner()
+	task.spawn(function()
+		local basePos = UDim2.new(0.5, 0, 0.22, 0)
+		for i = 1, 6 do
+			local offset = (i % 2 == 0) and 7 or -7
+			banner.Position = UDim2.new(0.5, offset, 0.22, 0)
+			task.wait(0.04)
+		end
+		banner.Position = basePos
+	end)
+end
+
+local function cameraPunch()
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return
+	end
+	local baseFov = camera.FieldOfView
+	local out = TweenService:Create(camera, TweenInfo.new(0.12, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		FieldOfView = baseFov + 10,
+	})
+	out:Play()
+	out.Completed:Once(function()
+		TweenService:Create(camera, TweenInfo.new(0.25, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			FieldOfView = baseFov,
+		}):Play()
+	end)
+end
+
+local function hideAllPanels()
+	if selectionPanel.Visible then
+		popOut(selectionPanel, selectionScale)
+	end
+	if rollPanel.Visible then
+		popOut(rollPanel, rollScale)
+	end
+end
+
+--------------------------------------------------------------------
+-- Round flow
+--------------------------------------------------------------------
+
+local rouletteActive = false
+local spinActive = false
+
+RoundStatus.OnClientEvent:Connect(function(phase, timeLeft)
+	if phase == "Intermission" then
+		statusLabel.Text = "🌀 Next disaster in " .. timeLeft .. "s..."
+	end
+	updateLuckChip(phase == "Intermission")
+end)
+
+SelectionStarted.OnClientEvent:Connect(function(names)
+	hideAllPanels()
+	luckChip.Visible = false
+	statusLabel.Text = "🎯 Selecting the roller..."
+	popIn(selectionPanel, selectionScale)
+	drumroll:Play()
+
+	rouletteActive = true
+	task.spawn(function()
+		local i = 1
+		while rouletteActive do
+			rouletteName.Text = names[((i - 1) % #names) + 1]
+			tickSound:Play()
+			i += 1
+			task.wait(0.14)
+		end
+	end)
+end)
+
+PlayerSelected.OnClientEvent:Connect(function(chosenName)
+	rouletteActive = false
+	drumroll:Stop()
+
+	rouletteName.Text = "🎉 " .. chosenName .. " 🎉"
+	rouletteName.TextColor3 = GOLD
+	playFanfare()
+	doFlash(Color3.new(1, 1, 1), 0.45)
+
+	statusLabel.Text = chosenName .. " will roll the dice!"
+
+	if chosenName == player.Name then
+		popOut(selectionPanel, selectionScale)
+		task.wait(0.3)
+		rollResult.Text = ""
+		oddsLabel.Text = oddsText()
+		rollButton.Visible = true
+		autoRollLabel.Text = "Auto-roll in " .. config.RollTimeout .. "s"
+		popIn(rollPanel, rollScale)
+
+		task.spawn(function()
+			for i = config.RollTimeout, 1, -1 do
+				autoRollLabel.Text = "Auto-roll in " .. i .. "s"
+				task.wait(1)
+			end
+			autoRollLabel.Text = ""
+		end)
+	else
+		task.delay(3, function()
+			if selectionPanel.Visible then
+				popOut(selectionPanel, selectionScale)
+			end
+		end)
+	end
+end)
+
+rollButton.MouseButton1Click:Connect(function()
+	rollButton.Visible = false
+	autoRollLabel.Text = ""
+	diceSound:Play()
+	RollRequested:FireServer()
+end)
+
+-- The spin itself is drawn by RollReel (LobbyUpgrade add-on): a sliding reel of rarity-coloured
+-- cards for everyone. Here we only tidy away the roll panel when the spin starts.
+RollStarted.OnClientEvent:Connect(function()
+	spinActive = false
+	if rollPanel.Visible then
+		popOut(rollPanel, rollScale)
+	end
+end)
+
+DisasterRevealed.OnClientEvent:Connect(function()
+	spinActive = false
+end)
+
+DisasterStarted.OnClientEvent:Connect(function(disasterId)
+	local disaster = config.GetDisasterById(disasterId)
+	if not disaster then
+		return
+	end
+
+	hideAllPanels()
+	statusLabel.Text = "⚠️ " .. disaster.Name .. " incoming! Survive!"
+
+	-- Switch from the calm music to the disaster music
+	playDisasterMusic()
+
+	banner.BackgroundColor3 = disaster.Color
+	bannerEmoji.Text = disaster.Emoji
+	bannerTitle.Text = string.upper(disaster.Name)
+	bannerDesc.Text = disaster.Description
+	banner.Position = UDim2.new(0.5, 0, 0, -140)
+	banner.Visible = true
+
+	whoosh:Play()
+	doFlash(disaster.Color, 0.6)
+	cameraPunch()
+
+	TweenService:Create(banner, TweenInfo.new(0.5, Enum.EasingStyle.Bounce, Enum.EasingDirection.Out), {
+		Position = UDim2.new(0.5, 0, 0.22, 0),
+	}):Play()
+	shakeBanner()
+end)
+
+DisasterEnded.OnClientEvent:Connect(function()
+	if banner.Visible then
+		local tween = TweenService:Create(banner, TweenInfo.new(0.4, Enum.EasingStyle.Back, Enum.EasingDirection.In), {
+			Position = UDim2.new(0.5, 0, 0, -140),
+		})
+		tween:Play()
+		tween.Completed:Once(function()
+			banner.Visible = false
+		end)
+	end
+	statusLabel.Text = "🌴 The island is safe... for now."
+
+	-- Back to the calm island music
+	playCalmMusic()
+end)]]></ProtectedString></Properties></Item></Item></roblox>

@@ -16,10 +16,11 @@ DisasterConfig.DisasterDuration = 25
 -- Rarity tiers. Multiplier scales the survival payout; RollerBonus is extra coins for the roller.
 DisasterConfig.RarityOrder = { "Common", "Rare", "Mythic", "Transcendent" }
 DisasterConfig.Rarities = {
-	Common = { Name = "Common", Color = Color3.fromRGB(200, 205, 220), Multiplier = 1,   RollerBonus = 0 },
-	Rare   = { Name = "Rare",   Color = Color3.fromRGB(90, 170, 255),  Multiplier = 1.5, RollerBonus = 40 },
-	Mythic = { Name = "Mythic", Color = Color3.fromRGB(255, 80, 200),  Multiplier = 3,   RollerBonus = 150 },
-	Transcendent = { Name = "Transcendent", Color = Color3.fromRGB(150, 255, 245), Multiplier = 10, RollerBonus = 1000 },
+	-- Color = the tier's text colour everywhere (roll reel, banners, Index); Glow = its accent / second gradient colour
+	Common = { Name = "Common", Color = Color3.fromRGB(245, 245, 250), Glow = Color3.fromRGB(170, 178, 196), Multiplier = 1,   RollerBonus = 0 },
+	Rare   = { Name = "Rare",   Color = Color3.fromRGB(60, 150, 255),  Glow = Color3.fromRGB(20, 70, 200),   Multiplier = 1.5, RollerBonus = 40 },
+	Mythic = { Name = "Mythic", Color = Color3.fromRGB(190, 90, 255),  Glow = Color3.fromRGB(255, 80, 200),  Multiplier = 3,   RollerBonus = 150 },
+	Transcendent = { Name = "Transcendent", Color = Color3.fromRGB(120, 255, 240), Glow = Color3.fromRGB(255, 240, 120), Multiplier = 10, RollerBonus = 1000, Rainbow = true },
 }
 
 -- Transcendent disasters are this rare (1 in N rounds, before Server Luck / the weekly featured boost)
