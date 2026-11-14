@@ -1,0 +1,1357 @@
+<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4"><Item class="Script" referent="RBX_DisasterGameManager"><Properties><string name="Name">DisasterGameManager</string><bool name="Disabled">false</bool><token name="RunContext">0</token><ProtectedString name="Source"><![CDATA[--[[
+	DisasterGameManager (Server)
+	Round loop: intermission -> player selection roulette -> chosen player rolls the dice
+	-> disaster strikes the island -> repeat.
+]]
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local assets = ReplicatedStorage:WaitForChild("DisasterAssets")
+local remotes = assets:WaitForChild("Remotes")
+local ServerScriptService = game:GetService("ServerScriptService")
+local TsunamiDisaster = require(ServerScriptService:WaitForChild("TsunamiDisaster"))
+local TornadoDisaster = require(ServerScriptService:WaitForChild("TornadoDisaster"))
+TsunamiDisaster.Init(remotes)
+TornadoDisaster.Init(remotes)
+local soundsFolder = assets:WaitForChild("Sounds")
+local config = require(assets:WaitForChild("DisasterConfig"))
+
+local RoundStatus = remotes:WaitForChild("RoundStatus")
+local SelectionStarted = remotes:WaitForChild("SelectionStarted")
+local PlayerSelected = remotes:WaitForChild("PlayerSelected")
+local RollRequested = remotes:WaitForChild("RollRequested")
+local RollStarted = remotes:WaitForChild("RollStarted")
+local DisasterRevealed = remotes:WaitForChild("DisasterRevealed")
+local DisasterStarted = remotes:WaitForChild("DisasterStarted")
+local DisasterEnded = remotes:WaitForChild("DisasterEnded")
+
+local rng = Random.new()
+
+-- [Progression hook] lets ProgressionServer know when a disaster starts/ends
+local ServerStorage = game:GetService("ServerStorage")
+local roundEvents = ServerStorage:FindFirstChild("RoundEvents")
+if not roundEvents then
+	roundEvents = Instance.new("BindableEvent")
+	roundEvents.Name = "RoundEvents"
+	roundEvents.Parent = ServerStorage
+end
+
+--------------------------------------------------------------------
+-- Helpers
+--------------------------------------------------------------------
+
+local function getIslandRegion()
+	local island = workspace:FindFirstChild("IslandMap")
+	if island then
+		-- IslandMap may be a Folder (no GetBoundingBox), so compute bounds from its parts.
+		-- Prefer the Ground folder (the actual island) and skip Water so the huge
+		-- sea part doesn't spread the disaster area across the entire ocean.
+		local searchRoot = island:FindFirstChild("Ground") or island
+		local water = island:FindFirstChild("Water")
+		local minPos, maxPos
+		for _, descendant in ipairs(searchRoot:GetDescendants()) do
+			if descendant:IsA("BasePart") and not (water and water:IsAncestorOf(descendant)) then
+				local pos = descendant.Position
+				local halfSize = descendant.Size / 2
+				local partMin = pos - halfSize
+				local partMax = pos + halfSize
+				if not minPos then
+					minPos = partMin
+					maxPos = partMax
+				else
+					minPos = Vector3.new(
+						math.min(minPos.X, partMin.X),
+						math.min(minPos.Y, partMin.Y),
+						math.min(minPos.Z, partMin.Z)
+					)
+					maxPos = Vector3.new(
+						math.max(maxPos.X, partMax.X),
+						math.max(maxPos.Y, partMax.Y),
+						math.max(maxPos.Z, partMax.Z)
+					)
+				end
+			end
+		end
+		if minPos then
+			return (minPos + maxPos) / 2, maxPos - minPos
+		end
+	end
+	return Vector3.zero, Vector3.new(120, 40, 120)
+end
+
+-- Raycast straight down at (x, z) to find the real walkable ground surface.
+-- RespectCanCollide skips all disaster VFX parts (they are CanCollide = false)
+-- and we explicitly exclude the Water volume and player characters.
+local function raycastGroundY(x, z)
+	local params = RaycastParams.new()
+	params.RespectCanCollide = true
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	local exclude = {}
+	local island = workspace:FindFirstChild("IslandMap")
+	local water = island and island:FindFirstChild("Water")
+	if water then
+		table.insert(exclude, water)
+	end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			table.insert(exclude, player.Character)
+		end
+	end
+	params.FilterDescendantsInstances = exclude
+	local result = workspace:Raycast(Vector3.new(x, 400, z), Vector3.new(0, -800, 0), params)
+	if result then
+		return result.Position.Y
+	end
+	return nil
+end
+
+-- Top surface of the ocean (cached). Hits below this are seafloor, not island.
+local cachedWaterTop = nil
+local function getWaterTop()
+	if cachedWaterTop == nil then
+		cachedWaterTop = -math.huge
+		local island = workspace:FindFirstChild("IslandMap")
+		local water = island and island:FindFirstChild("Water")
+		if water then
+			for _, d in ipairs(water:GetDescendants()) do
+				if d:IsA("BasePart") then
+					cachedWaterTop = math.max(cachedWaterTop, d.Position.Y + d.Size.Y / 2)
+				end
+			end
+		end
+	end
+	return cachedWaterTop
+end
+
+-- Ground height at a specific spot, falling back to the given value.
+-- Hits below the ocean surface (seafloor) are clamped up to just above the
+-- water so projectiles targeting the ocean splash on the surface instead
+-- of sinking to the bottom.
+local function getGroundYAt(x, z, fallbackY)
+	local y = raycastGroundY(x, z)
+	if y then
+		return math.max(y, getWaterTop() + 0.5)
+	end
+	return fallbackY
+end
+
+-- Sample the island with raycasts and return the median ground height, so
+-- tall props (trees, mountains) in the bounding box don't skew ground level.
+local function getIslandGroundY(islandPos, islandSize)
+	local hits = {}
+	local sampleHalfX = math.max(islandSize.X / 2 - 6, 10)
+	local sampleHalfZ = math.max(islandSize.Z / 2 - 6, 10)
+	for i = -2, 2 do
+		for j = -2, 2 do
+			local y = raycastGroundY(
+				islandPos.X + (i / 2) * sampleHalfX,
+				islandPos.Z + (j / 2) * sampleHalfZ
+			)
+			-- Only count hits above the ocean surface so seafloor samples
+			-- don't drag the island ground level down.
+			if y and y > getWaterTop() + 1 then
+				table.insert(hits, y)
+			end
+		end
+	end
+	if #hits == 0 then
+		return islandPos.Y + islandSize.Y / 2
+	end
+	table.sort(hits)
+	return hits[math.ceil(#hits / 2)]
+end
+
+local function getAlivePlayers()
+	local list = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 then
+			table.insert(list, player)
+		end
+	end
+	return list
+end
+
+local function damageNear(position, radius, damage, exclude)
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if character ~= exclude and humanoid and hrp and humanoid.Health > 0 and (hrp.Position - position).Magnitude <= radius then
+			humanoid:TakeDamage(damage)
+		end
+	end
+end
+
+local function playSoundAt(parent, soundName, volume)
+	local template = soundsFolder:FindFirstChild(soundName)
+	if template and template:IsA("Sound") then
+		local sound = template:Clone()
+		sound.Volume = volume or 1
+		sound.Parent = parent
+		sound:Play()
+		sound.Ended:Once(function()
+			sound:Destroy()
+		end)
+		task.delay(15, function()
+			if sound.Parent then
+				sound:Destroy()
+			end
+		end)
+	end
+end
+
+--------------------------------------------------------------------
+-- Dramatic VFX helpers (screen shake, telegraphs, blocky blasts)
+--------------------------------------------------------------------
+
+local CameraShake = remotes:WaitForChild("CameraShake")
+local Debris = game:GetService("Debris")
+
+local function shakeNear(position, radius, intensity, duration)
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+		if hrp and (hrp.Position - position).Magnitude <= radius then
+			CameraShake:FireClient(player, intensity, duration)
+		end
+	end
+end
+
+local function shakeAll(intensity, duration)
+	CameraShake:FireAllClients(intensity, duration)
+end
+
+-- Pulsing warning circle on the ground
+local function createTelegraph(position, radius, color, duration)
+	local ring = Instance.new("Part")
+	ring.Name = "Telegraph"
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Size = Vector3.new(0.3, radius * 2, radius * 2)
+	ring.CFrame = CFrame.new(position) * CFrame.Angles(0, 0, math.rad(90))
+	ring.Anchored = true
+	ring.CanCollide = false
+	ring.CanQuery = false
+	ring.CanTouch = false
+	ring.Material = Enum.Material.Neon
+	ring.Color = color
+	ring.Transparency = 0.4
+	ring.Parent = workspace
+
+	task.spawn(function()
+		local elapsed = 0
+		while ring.Parent and elapsed < duration do
+			ring.Transparency = 0.35 + 0.3 * math.abs(math.sin(elapsed * 8))
+			elapsed += 0.05
+			task.wait(0.05)
+		end
+		if ring.Parent then
+			ring:Destroy()
+		end
+	end)
+	return ring
+end
+
+-- Flying blocky debris cubes
+local function spawnDebris(position, count, color, power)
+	for _ = 1, count do
+		local debris = Instance.new("Part")
+		debris.Name = "Debris"
+		debris.Size = Vector3.new(rng:NextNumber(1, 3), rng:NextNumber(1, 3), rng:NextNumber(1, 3))
+		debris.CFrame = CFrame.new(position) * CFrame.Angles(rng:NextNumber(0, math.pi), rng:NextNumber(0, math.pi), rng:NextNumber(0, math.pi))
+		debris.Anchored = false
+		debris.CanCollide = false
+		debris.CanQuery = false
+		debris.CanTouch = false
+		debris.Massless = true
+		debris.Material = Enum.Material.SmoothPlastic
+		debris.Color = color
+		debris.Parent = workspace
+		debris.AssemblyLinearVelocity = Vector3.new(
+			rng:NextNumber(-power, power),
+			rng:NextNumber(power * 0.6, power * 1.4),
+			rng:NextNumber(-power, power)
+		)
+		Debris:AddItem(debris, rng:NextNumber(2, 3.5))
+	end
+end
+
+-- Big blocky blast: expanding neon cube + flash light + debris + shake
+local function blockyBlast(position, blastSize, color, opts)
+	opts = opts or {}
+	local blast = Instance.new("Part")
+	blast.Name = "Blast"
+	blast.Size = Vector3.new(blastSize * 0.25, blastSize * 0.25, blastSize * 0.25)
+	blast.CFrame = CFrame.new(position) * CFrame.Angles(rng:NextNumber(0, math.pi), rng:NextNumber(0, math.pi), 0)
+	blast.Anchored = true
+	blast.CanCollide = false
+	blast.CanQuery = false
+	blast.CanTouch = false
+	blast.Material = Enum.Material.Neon
+	blast.Color = color
+	blast.Transparency = 0.05
+	blast.Parent = workspace
+
+	local light = Instance.new("PointLight")
+	light.Brightness = 10
+	light.Range = blastSize * 1.5
+	light.Color = color
+	light.Parent = blast
+
+	TweenService:Create(blast, TweenInfo.new(0.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		Size = Vector3.new(blastSize, blastSize, blastSize),
+		Transparency = 1,
+	}):Play()
+	TweenService:Create(light, TweenInfo.new(0.5), { Brightness = 0 }):Play()
+	task.delay(0.55, function()
+		blast:Destroy()
+	end)
+
+	if opts.debris then
+		spawnDebris(position, opts.debris, opts.debrisColor or color, opts.debrisPower or 40)
+	end
+	if opts.shakeRadius then
+		shakeNear(position, opts.shakeRadius, opts.shakeIntensity or 1, opts.shakeDuration or 0.4)
+	end
+end
+
+--------------------------------------------------------------------
+-- Selection spotlight VFX (follows the chosen player)
+--------------------------------------------------------------------
+
+local function createSpotlight(character)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	if not hrp then
+		return nil
+	end
+
+	local model = Instance.new("Model")
+	model.Name = "SelectionSpotlight"
+
+	local beam = Instance.new("Part")
+	beam.Name = "Beam"
+	beam.Shape = Enum.PartType.Cylinder
+	beam.Size = Vector3.new(16, 2.5, 2.5)
+	beam.CFrame = CFrame.new(hrp.Position + Vector3.new(0, 9, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	beam.Anchored = false
+	beam.CanCollide = false
+	beam.CanQuery = false
+	beam.CanTouch = false
+	beam.Massless = true
+	beam.Material = Enum.Material.Neon
+	beam.Color = Color3.fromRGB(255, 220, 120)
+	beam.Transparency = 0.5
+	beam.Parent = model
+
+	local light = Instance.new("PointLight")
+	light.Brightness = 2
+	light.Range = 14
+	light.Color = Color3.fromRGB(255, 220, 120)
+	light.Parent = beam
+
+	local sparkles = Instance.new("ParticleEmitter")
+	sparkles.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	sparkles.Rate = 25
+	sparkles.Lifetime = NumberRange.new(0.8, 1.4)
+	sparkles.Speed = NumberRange.new(2, 4)
+	sparkles.SpreadAngle = Vector2.new(180, 180)
+	sparkles.Color = ColorSequence.new(Color3.fromRGB(255, 230, 150))
+	sparkles.Size = NumberSequence.new(0.35)
+	sparkles.Parent = beam
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = hrp
+	weld.Part1 = beam
+	weld.Parent = beam
+
+	model.Parent = workspace
+	return model
+end
+
+--------------------------------------------------------------------
+-- Disasters
+--------------------------------------------------------------------
+
+local Disasters = {}
+
+Disasters.MeteorShower = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local groundY = getIslandGroundY(islandPos, islandSize)
+	local halfX = math.max(islandSize.X / 2 - 6, 10)
+	local halfZ = math.max(islandSize.Z / 2 - 6, 10)
+
+	local elapsed = 0
+	while elapsed < duration do
+		local targetX = islandPos.X + rng:NextNumber(-halfX, halfX)
+		local targetZ = islandPos.Z + rng:NextNumber(-halfZ, halfZ)
+		groundY = getGroundYAt(targetX, targetZ, groundY)
+		local targetPos = Vector3.new(targetX, groundY, targetZ)
+
+		-- Telegraph the impact zone while the meteor falls
+		createTelegraph(targetPos, 16, Color3.fromRGB(255, 120, 40), 2.2)
+
+		local meteor = Instance.new("Part")
+		meteor.Name = "Meteor"
+		meteor.Size = Vector3.new(8, 8, 8)
+		meteor.CFrame = CFrame.new(targetPos + Vector3.new(rng:NextNumber(-12, 12), 110, rng:NextNumber(-12, 12)))
+			* CFrame.Angles(rng:NextNumber(0, math.pi), rng:NextNumber(0, math.pi), rng:NextNumber(0, math.pi))
+		meteor.Anchored = true
+		meteor.CanCollide = false
+		meteor.Material = Enum.Material.Basalt
+		meteor.Color = Color3.fromRGB(60, 45, 40)
+		meteor.Parent = workspace
+
+		local fire = Instance.new("Fire")
+		fire.Heat = 15
+		fire.Size = 10
+		fire.Color = Color3.fromRGB(255, 140, 40)
+		fire.Parent = meteor
+
+		local smoke = Instance.new("Smoke")
+		smoke.Size = 8
+		smoke.Opacity = 0.4
+		smoke.RiseVelocity = -6
+		smoke.Color = Color3.fromRGB(80, 70, 70)
+		smoke.Parent = meteor
+
+		local light = Instance.new("PointLight")
+		light.Brightness = 4
+		light.Range = 26
+		light.Color = Color3.fromRGB(255, 140, 60)
+		light.Parent = meteor
+		-- Direct hit: the falling projectile itself damages and detonates on contact
+		local detonated = false
+		local hitCooldown = {}
+		meteor.Touched:Connect(function(hit)
+			local character = hit.Parent
+			if not character then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 and not hitCooldown[character] then
+				hitCooldown[character] = true
+				humanoid:TakeDamage(60)
+				detonated = true
+			end
+		end)
+
+
+		task.spawn(function()
+			local targetY = groundY + 4
+			while meteor.Parent and not detonated and meteor.Position.Y > targetY do
+				meteor.CFrame = meteor.CFrame - Vector3.new(0, 4.5, 0)
+				task.wait(0.03)
+			end
+			if not meteor.Parent then
+				return
+			end
+
+			-- Impact: massive blocky blast
+			local impactPos = meteor.Position
+			meteor:Destroy()
+			playSoundAt(workspace, "Explosion", 1)
+			damageNear(impactPos, 20, 80)
+			blockyBlast(impactPos, 34, Color3.fromRGB(255, 150, 50), {
+				debris = 10,
+				debrisColor = Color3.fromRGB(70, 55, 50),
+				debrisPower = 55,
+				shakeRadius = 70,
+				shakeIntensity = 1.2,
+				shakeDuration = 0.5,
+			})
+		end)
+
+		elapsed += 0.85
+		task.wait(0.85)
+	end
+end
+
+Disasters.RisingFlood = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local bottomY = islandPos.Y - islandSize.Y / 2
+	local topY = islandPos.Y + islandSize.Y / 2
+
+	local flood = Instance.new("Part")
+	flood.Name = "DisasterFlood"
+	flood.Size = Vector3.new(islandSize.X + 80, 12, islandSize.Z + 80)
+	flood.Position = Vector3.new(islandPos.X, bottomY - 12, islandPos.Z)
+	flood.Anchored = true
+	flood.CanCollide = false
+	flood.Material = Enum.Material.Glass
+	flood.Color = Color3.fromRGB(60, 160, 255)
+	flood.Transparency = 0.35
+	flood.Parent = workspace
+
+	-- Rumbling warning before the water rises
+	shakeAll(0.5, 1)
+	playSoundAt(workspace, "Whoosh", 1)
+	task.wait(1)
+
+	local touched = {}
+	flood.Touched:Connect(function(hit)
+		local character = hit.Parent
+		if not character then
+			return
+		end
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid and humanoid.Health > 0 and not touched[character] then
+			touched[character] = true
+			humanoid:TakeDamage(100)
+			task.delay(1, function()
+				touched[character] = nil
+			end)
+		end
+	end)
+
+	local riseTime = math.min(8, duration * 0.35)
+	local holdTime = math.max(duration - riseTime - 4, 1)
+
+	TweenService:Create(flood, TweenInfo.new(riseTime, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+		Position = Vector3.new(islandPos.X, topY + 2.5, islandPos.Z),
+	}):Play()
+
+	-- Continuous rumble while the water climbs
+	task.spawn(function()
+		for _ = 1, math.floor(riseTime) do
+			shakeAll(0.4, 0.6)
+			task.wait(1)
+		end
+	end)
+
+	task.wait(riseTime + holdTime)
+
+	local recede = TweenService:Create(flood, TweenInfo.new(3, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+		Position = Vector3.new(islandPos.X, bottomY - 14, islandPos.Z),
+	})
+	recede:Play()
+	recede.Completed:Wait()
+	flood:Destroy()
+end
+
+Disasters.LightningStorm = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local groundY = getIslandGroundY(islandPos, islandSize)
+	local halfX = math.max(islandSize.X / 2 - 6, 10)
+	local halfZ = math.max(islandSize.Z / 2 - 6, 10)
+
+	local elapsed = 0
+	while elapsed < duration do
+		local strikeX = islandPos.X + rng:NextNumber(-halfX, halfX)
+		local strikeZ = islandPos.Z + rng:NextNumber(-halfZ, halfZ)
+		groundY = getGroundYAt(strikeX, strikeZ, groundY)
+		local strikePos = Vector3.new(strikeX, groundY, strikeZ)
+
+		-- Telegraph where the bolt will hit
+		createTelegraph(strikePos, 12, Color3.fromRGB(255, 240, 120), 0.9)
+		task.wait(0.9)
+		elapsed += 0.9
+
+		-- Jagged blocky bolt built from stacked segments
+		local boltModel = Instance.new("Model")
+		boltModel.Name = "LightningBolt"
+
+		local segmentPos = strikePos + Vector3.new(rng:NextNumber(-8, 8), 95, rng:NextNumber(-8, 8))
+		local segmentIndex = 0
+		while segmentPos.Y > groundY do
+			segmentIndex += 1
+			local nextPos = segmentPos + Vector3.new(rng:NextNumber(-4, 4), -12, rng:NextNumber(-4, 4))
+			if nextPos.Y < groundY then
+				nextPos = Vector3.new(strikePos.X, groundY, strikePos.Z)
+			end
+			local mid = (segmentPos + nextPos) / 2
+			local segment = Instance.new("Part")
+			segment.Name = "Segment" .. segmentIndex
+			segment.Size = Vector3.new(2.5, (segmentPos - nextPos).Magnitude + 1, 2.5)
+			segment.CFrame = CFrame.lookAt(mid, nextPos) * CFrame.Angles(math.rad(-90), 0, 0)
+			segment.Anchored = true
+			segment.CanCollide = false
+			segment.Material = Enum.Material.Neon
+			segment.Color = Color3.fromRGB(255, 240, 120)
+			segment.Parent = boltModel
+			segmentPos = nextPos
+		end
+
+		local firstSegment = boltModel:FindFirstChild("Segment1")
+		if firstSegment then
+			local light = Instance.new("PointLight")
+			light.Brightness = 12
+			light.Range = 50
+			light.Color = Color3.fromRGB(255, 240, 150)
+			light.Parent = firstSegment
+		end
+
+		boltModel.Parent = workspace
+
+		playSoundAt(boltModel, "Thunder", 1)
+		damageNear(strikePos, 14, 100)
+		shakeNear(strikePos, 80, 1, 0.4)
+		spawnDebris(strikePos, 5, Color3.fromRGB(120, 110, 90), 30)
+
+		for _, segment in ipairs(boltModel:GetChildren()) do
+			if segment:IsA("BasePart") then
+				TweenService:Create(segment, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+					Transparency = 1,
+					Size = segment.Size * 0.3,
+				}):Play()
+			end
+		end
+		task.delay(0.4, function()
+			boltModel:Destroy()
+		end)
+
+		elapsed += 1.1
+		task.wait(1.1)
+	end
+end
+
+--------------------------------------------------------------------
+-- Tsunami: a giant wave sweeps across the island from a random side.
+-- Players must outrun it — getting caught deals heavy damage and a fling.
+--------------------------------------------------------------------
+
+Disasters.Tsunami = function(duration)
+	TsunamiDisaster.Run({
+		remotes = remotes,
+		rng = rng,
+		getIslandRegion = getIslandRegion,
+		getIslandGroundY = getIslandGroundY,
+		getWaterTop = getWaterTop,
+		raycastGroundY = raycastGroundY,
+		playSoundAt = playSoundAt,
+		shakeAll = shakeAll,
+		shakeNear = shakeNear,
+		spawnDebris = spawnDebris,
+	}, duration)
+end
+
+--------------------------------------------------------------------
+-- Tornado: a spinning funnel chases the nearest player and flings
+-- anyone caught in it.
+--------------------------------------------------------------------
+
+Disasters.Tornado = function(duration)
+	TornadoDisaster.Run({
+		remotes = remotes,
+		rng = rng,
+		getIslandRegion = getIslandRegion,
+		getIslandGroundY = getIslandGroundY,
+		getWaterTop = getWaterTop,
+		raycastGroundY = raycastGroundY,
+		playSoundAt = playSoundAt,
+		shakeAll = shakeAll,
+		shakeNear = shakeNear,
+		spawnDebris = spawnDebris,
+	}, duration)
+end
+
+--------------------------------------------------------------------
+-- Earthquake: shockwave rings expand from the island center.
+-- Players must jump as the ring passes under them to dodge damage.
+--------------------------------------------------------------------
+
+Disasters.Earthquake = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local groundY = getIslandGroundY(islandPos, islandSize)
+	local maxRadius = math.max(islandSize.X, islandSize.Z) + 20
+
+	local waveInterval = 2.4
+	local ringSpeed = 45
+	local elapsed = 0
+	while elapsed < duration do
+		-- Warning rumble + telegraph at the epicenter before each shockwave
+		playSoundAt(workspace, "Thunder", 0.8)
+		shakeAll(0.5, 0.6)
+		createTelegraph(Vector3.new(islandPos.X, groundY + 0.5, islandPos.Z), 12, Color3.fromRGB(255, 140, 60), 0.7)
+		task.wait(0.7)
+		elapsed += 0.7
+
+		local ring = Instance.new("Part")
+		ring.Name = "QuakeRing"
+		ring.Shape = Enum.PartType.Cylinder
+		ring.Size = Vector3.new(2, 6, 6)
+		ring.CFrame = CFrame.new(islandPos.X, groundY + 0.5, islandPos.Z) * CFrame.Angles(0, 0, math.rad(90))
+		ring.Anchored = true
+		ring.CanCollide = false
+		ring.CanQuery = false
+		ring.CanTouch = false
+		ring.Material = Enum.Material.Neon
+		ring.Color = Color3.fromRGB(180, 120, 70)
+		ring.Transparency = 0.35
+		ring.Parent = workspace
+
+		task.spawn(function()
+			local struck = {}
+			local radius = 2
+			while ring.Parent and radius < maxRadius do
+				radius += ringSpeed * 0.1
+				ring.Size = Vector3.new(2, radius * 2, radius * 2)
+				ring.Transparency = math.min(0.35 + radius / maxRadius * 0.5, 0.85)
+
+				-- Chunky debris kicks up along the expanding crack
+				if rng:NextNumber() < 0.4 then
+					local angle = rng:NextNumber(0, math.pi * 2)
+					local edgePos = Vector3.new(islandPos.X + math.cos(angle) * radius, groundY + 1, islandPos.Z + math.sin(angle) * radius)
+					spawnDebris(edgePos, 2, Color3.fromRGB(140, 110, 80), 20)
+					shakeNear(edgePos, 30, 0.35, 0.25)
+				end
+
+				for _, player in ipairs(Players:GetPlayers()) do
+					if struck[player] then
+						continue
+					end
+					local character = player.Character
+					local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+					local hrp = character and character:FindFirstChild("HumanoidRootPart")
+					if humanoid and hrp and humanoid.Health > 0 then
+						local flatDist = (Vector3.new(hrp.Position.X, 0, hrp.Position.Z) - Vector3.new(islandPos.X, 0, islandPos.Z)).Magnitude
+						if flatDist <= radius then
+							struck[player] = true
+							-- Jump over the shockwave to dodge it!
+							if humanoid.FloorMaterial ~= Enum.Material.Air then
+								humanoid:TakeDamage(40)
+								hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 35, hrp.AssemblyLinearVelocity.Z)
+								spawnDebris(hrp.Position, 3, Color3.fromRGB(140, 110, 80), 25)
+							end
+						end
+					end
+				end
+				task.wait(0.1)
+			end
+			ring:Destroy()
+		end)
+
+		elapsed += waveInterval
+		task.wait(waveInterval)
+	end
+end
+
+--------------------------------------------------------------------
+-- Volcanic Eruption: telegraphed warning rings appear on the ground,
+-- then lava geysers erupt and leave burning pools behind.
+--------------------------------------------------------------------
+
+Disasters.VolcanicEruption = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local groundY = getIslandGroundY(islandPos, islandSize)
+	local halfX = math.max(islandSize.X / 2 - 6, 10)
+	local halfZ = math.max(islandSize.Z / 2 - 6, 10)
+
+	local elapsed = 0
+	while elapsed < duration do
+		local posX = islandPos.X + rng:NextNumber(-halfX, halfX)
+		local posZ = islandPos.Z + rng:NextNumber(-halfZ, halfZ)
+		groundY = getGroundYAt(posX, posZ, groundY)
+		local pos = Vector3.new(posX, groundY, posZ)
+
+		-- Telegraph: pulsing warning ring before the eruption
+		createTelegraph(pos, 14, Color3.fromRGB(255, 60, 40), 0.9)
+		task.wait(0.9)
+
+		-- Eruption: blocky blast + a column of lava cubes shooting skyward
+		playSoundAt(workspace, "Explosion", 1)
+		damageNear(pos, 13, 80)
+		blockyBlast(pos + Vector3.new(0, 6, 0), 26, Color3.fromRGB(255, 120, 30), {
+			debris = 10,
+			debrisColor = Color3.fromRGB(255, 140, 40),
+			debrisPower = 40,
+			shakeRadius = 130,
+			shakeIntensity = 0.9,
+			shakeDuration = 0.5,
+		})
+
+		task.spawn(function()
+			local column = Instance.new("Model")
+			column.Name = "LavaGeyser"
+			for g = 1, 6 do
+				local cube = Instance.new("Part")
+				cube.Name = "LavaCube" .. g
+				cube.Size = Vector3.new(5, 5, 5)
+				cube.CFrame = CFrame.new(pos + Vector3.new(rng:NextNumber(-2, 2), 3 + g * 6, rng:NextNumber(-2, 2)))
+					* CFrame.Angles(rng:NextNumber(0, math.pi), rng:NextNumber(0, math.pi), 0)
+				cube.Anchored = true
+				cube.CanCollide = false
+				cube.CanQuery = false
+				cube.CanTouch = false
+				cube.Material = Enum.Material.Neon
+				cube.Color = Color3.fromRGB(255, rng:NextInteger(90, 150), 20)
+				cube.Parent = column
+				task.delay(g * 0.06, function()
+					if cube.Parent then
+						TweenService:Create(cube, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+							CFrame = cube.CFrame + Vector3.new(rng:NextNumber(-6, 6), 45, rng:NextNumber(-6, 6)),
+							Transparency = 1,
+						}):Play()
+					end
+				end)
+			end
+			column.Parent = workspace
+			task.delay(1.2, function()
+				column:Destroy()
+			end)
+		end)
+
+		-- Burning pool left behind
+		local pool = Instance.new("Part")
+		pool.Name = "LavaPool"
+		pool.Size = Vector3.new(18, 0.4, 18)
+		pool.Position = pos + Vector3.new(0, 0.2, 0)
+		pool.Anchored = true
+		pool.CanCollide = false
+		pool.Material = Enum.Material.Neon
+		pool.Color = Color3.fromRGB(255, 90, 20)
+		pool.Transparency = 0.2
+		pool.Parent = workspace
+
+		local burnCooldown = {}
+		pool.Touched:Connect(function(hit)
+			local character = hit.Parent
+			if not character then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 and not burnCooldown[character] then
+				burnCooldown[character] = true
+				humanoid:TakeDamage(25)
+				task.delay(0.8, function()
+					burnCooldown[character] = nil
+				end)
+			end
+		end)
+
+		task.delay(5, function()
+			if pool.Parent then
+				TweenService:Create(pool, TweenInfo.new(1), { Transparency = 1 }):Play()
+				task.delay(1, function()
+					pool:Destroy()
+				end)
+			end
+		end)
+
+		elapsed += 1.5
+		task.wait(0.6)
+	end
+end
+
+--------------------------------------------------------------------
+-- Blizzard: frost pulses periodically chill and slow everyone while
+-- ice shards rain down from the sky.
+--------------------------------------------------------------------
+
+Disasters.Blizzard = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local groundY = getIslandGroundY(islandPos, islandSize)
+	local halfX = math.max(islandSize.X / 2 - 6, 10)
+	local halfZ = math.max(islandSize.Z / 2 - 6, 10)
+
+	-- Frost pulses chill everyone, briefly slowing them
+	local slowed = {}
+	task.spawn(function()
+		local pulseElapsed = 0
+		while pulseElapsed < duration do
+			task.wait(5)
+			pulseElapsed += 5
+			-- Frost pulse: screen shudder + ice chunks bursting around each player
+			shakeAll(0.3, 0.5)
+			playSoundAt(workspace, "Whoosh", 0.6)
+			for _, player in ipairs(Players:GetPlayers()) do
+				local character = player.Character
+				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+				local hrp = character and character:FindFirstChild("HumanoidRootPart")
+				if humanoid and hrp and humanoid.Health > 0 then
+					spawnDebris(hrp.Position, 4, Color3.fromRGB(190, 230, 255), 15)
+				end
+				if humanoid and humanoid.Health > 0 and character and not slowed[player] then
+					slowed[player] = true
+					character:SetAttribute("SpeedMultiplier", 0.45) -- MovementController applies this
+					task.delay(2.5, function()
+						if character.Parent then
+							character:SetAttribute("SpeedMultiplier", nil)
+						end
+						slowed[player] = nil
+					end)
+				end
+			end
+		end
+	end)
+
+	-- Ice shards raining down
+	local elapsed = 0
+	while elapsed < duration do
+		local spawnX = islandPos.X + rng:NextNumber(-halfX, halfX)
+		local spawnZ = islandPos.Z + rng:NextNumber(-halfZ, halfZ)
+		groundY = getGroundYAt(spawnX, spawnZ, groundY)
+		local spawnPos = Vector3.new(spawnX, groundY + 80, spawnZ)
+
+		local shard = Instance.new("Part")
+		shard.Name = "IceShard"
+		shard.Shape = Enum.PartType.Ball
+		shard.Size = Vector3.new(4, 4, 4)
+		shard.CFrame = CFrame.new(spawnPos)
+		shard.Anchored = true
+		shard.CanCollide = false
+		shard.Material = Enum.Material.Neon
+		shard.Color = Color3.fromRGB(170, 225, 255)
+		shard.Parent = workspace
+
+		local light = Instance.new("PointLight")
+		light.Brightness = 3
+		light.Range = 14
+		light.Color = Color3.fromRGB(170, 225, 255)
+		light.Parent = shard
+		-- Direct hit: the falling projectile itself damages and detonates on contact
+		local detonated = false
+		local hitCharacter = nil
+		local hitCooldown = {}
+		shard.Touched:Connect(function(hit)
+			local character = hit.Parent
+			if not character then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 and not hitCooldown[character] then
+				hitCooldown[character] = true
+				humanoid:TakeDamage(45)
+				hitCharacter = character
+				detonated = true
+			end
+		end)
+
+
+		task.spawn(function()
+			local targetY = groundY + 1.5
+			while shard.Parent and not detonated and shard.Position.Y > targetY do
+				shard.CFrame = shard.CFrame - Vector3.new(0, 5, 0)
+				task.wait(0.03)
+			end
+			if not shard.Parent then
+				return
+			end
+
+			playSoundAt(shard, "Explosion", 0.6)
+			damageNear(shard.Position, 11, 55, hitCharacter)
+			shakeNear(shard.Position, 60, 0.6, 0.35)
+			spawnDebris(shard.Position, 5, Color3.fromRGB(190, 230, 255), 25)
+
+			local shatter = Instance.new("Part")
+			shatter.Shape = Enum.PartType.Ball
+			shatter.Size = Vector3.new(2, 2, 2)
+			shatter.CFrame = CFrame.new(shard.Position)
+			shatter.Anchored = true
+			shatter.CanCollide = false
+			shatter.Material = Enum.Material.Neon
+			shatter.Color = Color3.fromRGB(200, 240, 255)
+			shatter.Transparency = 0.1
+			shatter.Parent = workspace
+			TweenService:Create(shatter, TweenInfo.new(0.35, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+				Size = Vector3.new(14, 14, 14),
+				Transparency = 1,
+			}):Play()
+			task.delay(0.4, function()
+				shatter:Destroy()
+			end)
+
+			shard:Destroy()
+		end)
+
+		elapsed += 0.8
+		task.wait(0.8)
+	end
+end
+
+--------------------------------------------------------------------
+-- Acid Rain: corrosive droplets fall across the island and leave
+-- briefly lingering acid puddles. Keep moving!
+--------------------------------------------------------------------
+
+Disasters.AcidRain = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local groundY = getIslandGroundY(islandPos, islandSize)
+	local halfX = math.max(islandSize.X / 2 - 6, 10)
+	local halfZ = math.max(islandSize.Z / 2 - 6, 10)
+
+	local function spawnDrop()
+		local dropX = islandPos.X + rng:NextNumber(-halfX, halfX)
+		local dropZ = islandPos.Z + rng:NextNumber(-halfZ, halfZ)
+		groundY = getGroundYAt(dropX, dropZ, groundY)
+		local dropPos = Vector3.new(dropX, groundY + 60, dropZ)
+
+		-- Telegraph the landing spot with a pulsing green ring
+		createTelegraph(Vector3.new(dropPos.X, groundY + 0.3, dropPos.Z), 7, Color3.fromRGB(140, 255, 60), 0.5)
+
+		local drop = Instance.new("Part")
+		drop.Name = "AcidDrop"
+		drop.Shape = Enum.PartType.Ball
+		drop.Size = Vector3.new(2.5, 2.5, 2.5)
+		drop.CFrame = CFrame.new(dropPos)
+		drop.Anchored = true
+		drop.CanCollide = false
+		drop.Material = Enum.Material.Neon
+		drop.Color = Color3.fromRGB(140, 255, 60)
+		drop.Parent = workspace
+		-- Direct hit: the falling projectile itself damages and detonates on contact
+		local detonated = false
+		local hitCharacter = nil
+		local hitCooldown = {}
+		drop.Touched:Connect(function(hit)
+			local character = hit.Parent
+			if not character then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 and not hitCooldown[character] then
+				hitCooldown[character] = true
+				humanoid:TakeDamage(25)
+				hitCharacter = character
+				detonated = true
+			end
+		end)
+
+
+		while drop.Parent and not detonated and drop.Position.Y > groundY + 1 do
+			drop.CFrame = drop.CFrame - Vector3.new(0, 4, 0)
+			task.wait(0.03)
+		end
+		if not drop.Parent then
+			return
+		end
+
+		damageNear(drop.Position, 8, 30, hitCharacter)
+		shakeNear(drop.Position, 40, 0.4, 0.25)
+		spawnDebris(drop.Position, 3, Color3.fromRGB(140, 255, 60), 18)
+		blockyBlast(drop.Position, 8, Color3.fromRGB(140, 255, 60), {})
+
+		-- Lingering acid puddle
+		local puddle = Instance.new("Part")
+		puddle.Name = "AcidPuddle"
+		puddle.Shape = Enum.PartType.Cylinder
+		puddle.Size = Vector3.new(0.3, 10, 10)
+		puddle.CFrame = CFrame.new(drop.Position.X, groundY + 0.15, drop.Position.Z) * CFrame.Angles(0, 0, math.rad(90))
+		puddle.Anchored = true
+		puddle.CanCollide = false
+		puddle.Material = Enum.Material.Neon
+		puddle.Color = Color3.fromRGB(140, 255, 60)
+		puddle.Transparency = 0.35
+		puddle.Parent = workspace
+
+		local puddleCooldown = {}
+		puddle.Touched:Connect(function(hit)
+			local character = hit.Parent
+			if not character then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 and not puddleCooldown[character] then
+				puddleCooldown[character] = true
+				humanoid:TakeDamage(15)
+				task.delay(0.8, function()
+					puddleCooldown[character] = nil
+				end)
+			end
+		end)
+
+		task.delay(3.5, function()
+			if puddle.Parent then
+				TweenService:Create(puddle, TweenInfo.new(0.8), { Transparency = 1 }):Play()
+				task.delay(0.9, function()
+					puddle:Destroy()
+				end)
+			end
+		end)
+
+		drop:Destroy()
+	end
+
+	local elapsed = 0
+	while elapsed < duration do
+		for _ = 1, 9 do
+			task.spawn(spawnDrop)
+		end
+		elapsed += 0.7
+		task.wait(0.7)
+	end
+end
+
+--------------------------------------------------------------------
+-- Shark Attack: a shark patrols the waters around the island and
+-- hunts any player who goes for a swim. Stay on land!
+--------------------------------------------------------------------
+
+Disasters.SharkAttack = function(duration)
+	local islandPos, islandSize = getIslandRegion()
+	local waterY = 0 -- ocean surface level
+	local patrolRadius = math.max(islandSize.X, islandSize.Z) / 2 + 35
+
+	local model = Instance.new("Model")
+	model.Name = "Shark"
+
+	local body = Instance.new("Part")
+	body.Name = "Body"
+	body.Size = Vector3.new(3, 2.5, 10)
+	body.Color = Color3.fromRGB(110, 125, 140)
+	body.Material = Enum.Material.SmoothPlastic
+	body.Anchored = true
+	body.CanCollide = false
+	body.Parent = model
+
+	local fin = Instance.new("WedgePart")
+	fin.Name = "Fin"
+	fin.Size = Vector3.new(0.8, 3.5, 3)
+	fin.Color = Color3.fromRGB(95, 110, 125)
+	fin.Material = Enum.Material.SmoothPlastic
+	fin.Anchored = true
+	fin.CanCollide = false
+	fin.Parent = model
+
+	local tail = Instance.new("WedgePart")
+	tail.Name = "Tail"
+	tail.Size = Vector3.new(0.8, 3, 3)
+	tail.Color = Color3.fromRGB(110, 125, 140)
+	tail.Material = Enum.Material.SmoothPlastic
+	tail.Anchored = true
+	tail.CanCollide = false
+	tail.Parent = model
+
+	model.PrimaryPart = body
+	model.Parent = workspace
+
+	-- Place fin and tail relative to the body
+	local function layoutShark(pivot)
+		body.CFrame = pivot
+		fin.CFrame = pivot * CFrame.new(0, 2.2, -1)
+		tail.CFrame = pivot * CFrame.new(0, 0.5, 5.5) * CFrame.Angles(0, math.rad(180), 0)
+	end
+
+	local angle = rng:NextNumber(0, math.pi * 2)
+	local sharkPos = Vector3.new(
+		islandPos.X + math.cos(angle) * patrolRadius,
+		waterY - 1,
+		islandPos.Z + math.sin(angle) * patrolRadius
+	)
+	local elapsed = 0
+	local biteCooldown = {}
+	while elapsed < duration and model.Parent do
+		angle += 0.03
+
+		-- Patrol circle position by default
+		local targetPos = Vector3.new(
+			islandPos.X + math.cos(angle) * patrolRadius,
+			waterY - 1,
+			islandPos.Z + math.sin(angle) * patrolRadius
+		)
+		local step = 2.2 -- studs per tick
+
+		-- Hunt the nearest player in the water
+		local huntTarget, huntDist
+		for _, player in ipairs(Players:GetPlayers()) do
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if humanoid and hrp and humanoid.Health > 0 and hrp.Position.Y < waterY + 1 then
+				local dist = (hrp.Position - sharkPos).Magnitude
+				if not huntDist or dist < huntDist then
+					huntTarget, huntDist = hrp, dist
+				end
+			end
+		end
+
+		if huntTarget then
+			targetPos = huntTarget.Position - Vector3.new(0, 1, 0)
+			step = 3.4 -- bursts of speed when hunting
+			-- Warning: a red alert ring pulses where the shark is charging
+			if elapsed % 1 < 0.1 then
+				createTelegraph(Vector3.new(sharkPos.X, waterY + 0.3, sharkPos.Z), 10, Color3.fromRGB(255, 60, 60), 0.9)
+				playSoundAt(model, "Whoosh", 0.6)
+			end
+		end
+
+		local toTarget = targetPos - sharkPos
+		if toTarget.Magnitude > 0.5 then
+			sharkPos += toTarget.Unit * math.min(step, toTarget.Magnitude)
+		end
+
+		local lookDir = huntTarget and (huntTarget.Position - sharkPos) or toTarget
+		if lookDir.Magnitude > 0.5 then
+			layoutShark(CFrame.lookAt(sharkPos, sharkPos + lookDir.Unit))
+		else
+			layoutShark(CFrame.new(sharkPos))
+		end
+
+		-- Churn up a blocky wake behind the shark
+		if rng:NextNumber() < 0.4 then
+			spawnDebris(sharkPos + Vector3.new(rng:NextNumber(-3, 3), 1, rng:NextNumber(-3, 3)), 1, Color3.fromRGB(220, 240, 255), 10)
+		end
+
+		-- Bite anyone close
+		for _, player in ipairs(Players:GetPlayers()) do
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			local hrp = character and character:FindFirstChild("HumanoidRootPart")
+			if humanoid and hrp and humanoid.Health > 0 and not biteCooldown[character] then
+				if (hrp.Position - sharkPos).Magnitude <= 9 then
+					biteCooldown[character] = true
+					humanoid:TakeDamage(50)
+					playSoundAt(model, "WaterSplash", 1)
+					blockyBlast(hrp.Position, 14, Color3.fromRGB(255, 70, 60), {
+						debris = 5,
+						debrisColor = Color3.fromRGB(220, 240, 255),
+						debrisPower = 25,
+						shakeRadius = 60,
+						shakeIntensity = 0.8,
+						shakeDuration = 0.4,
+					})
+					hrp.AssemblyLinearVelocity = Vector3.new(hrp.AssemblyLinearVelocity.X, 30, hrp.AssemblyLinearVelocity.Z)
+					task.delay(1.5, function()
+						biteCooldown[character] = nil
+					end)
+				end
+			end
+		end
+
+		elapsed += 0.1
+		task.wait(0.1)
+	end
+
+	model:Destroy()
+end
+
+--------------------------------------------------------------------
+-- Round loop
+--------------------------------------------------------------------
+
+local function runRound()
+	-- Intermission countdown
+	for i = config.IntermissionTime, 1, -1 do
+		RoundStatus:FireAllClients("Intermission", i)
+		task.wait(1)
+	end
+
+	local candidates = getAlivePlayers()
+	if #candidates == 0 then
+		return
+	end
+
+	-- Selection phase (client plays the roulette animation)
+	local names = {}
+	for _, player in ipairs(candidates) do
+		table.insert(names, player.Name)
+	end
+	SelectionStarted:FireAllClients(names)
+	task.wait(config.SelectionDuration)
+
+	candidates = getAlivePlayers()
+	if #candidates == 0 then
+		return
+	end
+
+	local chosen = candidates[rng:NextInteger(1, #candidates)]
+	PlayerSelected:FireAllClients(chosen.Name)
+
+	local spotlight = nil
+	if chosen.Character then
+		spotlight = createSpotlight(chosen.Character)
+	end
+
+	-- Wait for the chosen player to roll (auto-roll after timeout)
+	local rolled = false
+	local conn = RollRequested.OnServerEvent:Connect(function(player)
+		if player == chosen then
+			rolled = true
+		end
+	end)
+
+	local waited = 0
+	while not rolled and waited < config.RollTimeout and chosen.Parent ~= nil do
+		task.wait(0.1)
+		waited += 0.1
+	end
+	conn:Disconnect()
+
+	if spotlight then
+		spotlight:Destroy()
+	end
+
+	-- Roll phase (client spins through disaster names)
+	local disasterNames = {}
+	for _, disaster in ipairs(config.Disasters) do
+		table.insert(disasterNames, disaster.Name)
+	end
+	RollStarted:FireAllClients(disasterNames)
+	task.wait(config.RollSpinDuration)
+
+	-- Weighted roll. A Server Luck Boost (set by ProgressionServer) makes Rare/Mythic likelier.
+	local luck, luckBuyer = 1, nil
+	local disaster
+
+	-- Admin panel: use the queued disaster once, then go back to random
+	local forcedId = ServerStorage:GetAttribute("AdminNextDisaster")
+	if forcedId then
+		ServerStorage:SetAttribute("AdminNextDisaster", nil)
+		disaster = config.GetDisasterById(forcedId)
+	end
+
+	if not disaster then
+		local luckRounds = ServerStorage:GetAttribute("LuckRounds") or 0
+		if luckRounds > 0 then
+			luck = ServerStorage:GetAttribute("LuckMultiplier") or 3
+			luckBuyer = ServerStorage:GetAttribute("LuckBuyer")
+			ServerStorage:SetAttribute("LuckRounds", luckRounds - 1)
+		end
+		disaster = config.PickDisaster(rng, luck)
+	end
+	DisasterRevealed:FireAllClients(disaster.Id, disaster.Rarity or "Common", chosen.Name, luck > 1 and (luckBuyer or "a player") or nil)
+	task.wait(config.RevealDuration)
+
+	-- Disaster phase
+	DisasterStarted:FireAllClients(disaster.Id)
+	roundEvents:Fire("Started", disaster.Id, chosen)
+	local disasterFunc = Disasters[disaster.Id]
+	-- Add-on disasters (e.g. MoonCollision from LobbyUpgrade): a BindableFunction in ServerStorage > ExtraDisasters
+	local extra = ServerStorage:FindFirstChild("ExtraDisasters")
+	local extraFunc = not disasterFunc and extra and extra:FindFirstChild(disaster.Id)
+	if extraFunc and extraFunc:IsA("BindableFunction") then
+		disasterFunc = function(duration)
+			extraFunc:Invoke(duration)
+		end
+	end
+	if disasterFunc then
+		disasterFunc(config.DisasterDuration)
+	elseif disaster.Combo then
+		-- Mythic combo: run every component disaster at the same time, wait for all to finish
+		local running = #disaster.Combo
+		for _, partId in ipairs(disaster.Combo) do
+			local partFunc = Disasters[partId]
+			if partFunc then
+				task.spawn(function()
+					local ok, err = pcall(partFunc, config.DisasterDuration)
+					if not ok then
+						warn("[DisasterGameManager] Combo part " .. partId .. " failed: " .. tostring(err))
+					end
+					running -= 1
+				end)
+			else
+				running -= 1
+			end
+		end
+		while running > 0 do
+			task.wait(0.25)
+		end
+	end
+	DisasterEnded:FireAllClients()
+	roundEvents:Fire("Ended", disaster.Id)
+end
+
+-- Main loop
+task.spawn(function()
+	while true do
+		local ok, err = pcall(runRound)
+		if not ok then
+			warn("[DisasterGameManager] Round error: " .. tostring(err))
+			DisasterEnded:FireAllClients()
+			roundEvents:Fire("Ended")
+		end
+		task.wait(3)
+	end
+end)]]></ProtectedString></Properties></Item></roblox>

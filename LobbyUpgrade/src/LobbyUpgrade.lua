@@ -55,6 +55,7 @@ local CLIENT_PROPS = {
 	"Shield", "ReviveHeart", "Clover", "CoinX2", "Crown", "GiftBox", "TrailSwirl",
 	"FxPlank", "FxRock", "FxMeteorChunk", "FxLeaf", "FxIceShard", "FxBolt", "FxShockRing", "FxWindStreak", "FxDroplet", "FxCloudPuff",
 	"MeteorRock", "IceCrystal", "AcidBlob", "LavaBlob", "LavaPool", "QuakeSpike", "Shark", "TsunamiCurl",
+	"Moon", "OxygenTank", "Sun", "Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune",
 }
 local propsFolder = ReplicatedStorage:FindFirstChild("LobbyKitProps")
 if not propsFolder then
@@ -78,7 +79,17 @@ if hasKit then
 end
 
 -- client scripts + the shop list run on each player's device
-for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems" }) do
+-- Moon Collision (Transcendent): runs through DisasterGameManager's ExtraDisasters hook
+do
+	local moonModule = script:FindFirstChild("MoonCollision")
+	if moonModule and hasKit then
+		require(moonModule).init(Kit)
+	elseif moonModule then
+		warn("[LobbyUpgrade] Moon Collision needs the Blender kit (LobbyKit.glb) - disaster not registered")
+	end
+end
+
+for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems", "MoonFX" }) do
 	local child = script:FindFirstChild(name)
 	if child then
 		child.Parent = ReplicatedStorage

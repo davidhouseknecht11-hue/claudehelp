@@ -21,6 +21,8 @@ sources = {
     "DisasterFX": read("src", "DisasterFX.lua"),
     "ShopUI": read("src", "ShopUI.lua"),
     "ShopItems": read("src", "ShopItems.lua"),
+    "MoonCollision": read("src", "MoonCollision.lua"),
+    "MoonFX": read("src", "MoonFX.lua"),
 }
 assert "--@PALETTE@" not in sources["KitLoader"]
 
@@ -38,7 +40,9 @@ children = item("ModuleScript", "KitLoader", sources["KitLoader"]) + \
     item("Script", "KitAnimator", sources["KitAnimator"], run_context=2) + \
     item("Script", "DisasterFX", sources["DisasterFX"], run_context=2) + \
     item("Script", "ShopUI", sources["ShopUI"], run_context=2) + \
-    item("ModuleScript", "ShopItems", sources["ShopItems"])   # run_context 2 = Client
+    item("ModuleScript", "ShopItems", sources["ShopItems"]) + \
+    item("ModuleScript", "MoonCollision", sources["MoonCollision"]) + \
+    item("Script", "MoonFX", sources["MoonFX"], run_context=2)   # run_context 2 = Client
 xml = '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + \
     item("Script", "LobbyUpgrade", sources["LobbyUpgrade"], run_context=0, children=children) + "</roblox>\n"
 
@@ -51,3 +55,11 @@ for name, src in sources.items():
     with open(os.path.join(HERE, "scripts_ready_to_paste", name + ".lua"), "w", encoding="utf8", newline="\n") as fh:
         fh.write(src)
 print("wrote LobbyUpgrade.rbxmx", len(xml), "bytes")
+
+# Patched copies of the game's own scripts (replace the originals with Insert from File)
+for name, cls in (("PetsClient", "LocalScript"), ("DisasterConfig", "ModuleScript"), ("DisasterGameManager", "Script")):
+    src = read("scripts_ready_to_paste", name + ".lua")
+    one = '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + item(cls, name, src) + "</roblox>\n"
+    with open(os.path.join(HERE, name + ".rbxmx"), "w", encoding="utf8", newline="\n") as fh:
+        fh.write(one)
+    print("wrote", name + ".rbxmx")

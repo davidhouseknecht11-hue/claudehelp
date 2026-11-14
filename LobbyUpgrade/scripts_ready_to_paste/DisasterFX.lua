@@ -49,6 +49,7 @@ local PROFILES = {
 	Earthquake = { wind = 30, weather = { "dust" }, tint = C3(225, 195, 150), shake = 0.6, debris = { "FxRock" } },
 	AcidRain = { wind = 45, weather = { "acid" }, tint = C3(170, 255, 140), shake = 0.1, debris = { "FxLeaf" } },
 	SharkAttack = { wind = 45, weather = { "rain" }, tint = C3(140, 220, 210), shake = 0.1, debris = { "FxDroplet" } },
+	MoonCollision = { wind = 55, weather = { "dust", "embers" }, tint = C3(255, 170, 130), shake = 0.2, debris = { "FxRock", "FxMeteorChunk" } },
 	Blizzard = { wind = 85, weather = { "snow" }, tint = C3(200, 230, 255), shake = 0.15, debris = { "FxIceShard" } },
 }
 

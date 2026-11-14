@@ -55,6 +55,7 @@ local CLIENT_PROPS = {
 	"Shield", "ReviveHeart", "Clover", "CoinX2", "Crown", "GiftBox", "TrailSwirl",
 	"FxPlank", "FxRock", "FxMeteorChunk", "FxLeaf", "FxIceShard", "FxBolt", "FxShockRing", "FxWindStreak", "FxDroplet", "FxCloudPuff",
 	"MeteorRock", "IceCrystal", "AcidBlob", "LavaBlob", "LavaPool", "QuakeSpike", "Shark", "TsunamiCurl",
+	"Moon", "OxygenTank", "Sun", "Mercury", "Venus", "Earth", "Mars", "Jupiter", "Saturn", "Uranus", "Neptune",
 }
 local propsFolder = ReplicatedStorage:FindFirstChild("LobbyKitProps")
 if not propsFolder then
@@ -78,7 +79,17 @@ if hasKit then
 end
 
 -- client scripts + the shop list run on each player's device
-for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems" }) do
+-- Moon Collision (Transcendent): runs through DisasterGameManager's ExtraDisasters hook
+do
+	local moonModule = script:FindFirstChild("MoonCollision")
+	if moonModule and hasKit then
+		require(moonModule).init(Kit)
+	elseif moonModule then
+		warn("[LobbyUpgrade] Moon Collision needs the Blender kit (LobbyKit.glb) - disaster not registered")
+	end
+end
+
+for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems", "MoonFX" }) do
 	local child = script:FindFirstChild(name)
 	if child then
 		child.Parent = ReplicatedStorage
@@ -804,6 +815,27 @@ local PALETTE = {
 	foam = { Color3.fromRGB(240, 250, 255), "SmoothPlastic", 0 },
 	sharkGrey = { Color3.fromRGB(100, 118, 140), "SmoothPlastic", 0 },
 	sharkBelly = { Color3.fromRGB(225, 232, 240), "SmoothPlastic", 0 },
+	moonGrey = { Color3.fromRGB(168, 166, 160), "Slate", 0 },
+	moonDark = { Color3.fromRGB(98, 96, 94), "Slate", 0 },
+	concrete = { Color3.fromRGB(150, 152, 148), "Concrete", 0 },
+	concreteDark = { Color3.fromRGB(96, 98, 96), "Concrete", 0 },
+	hazard = { Color3.fromRGB(255, 196, 20), "SmoothPlastic", 0 },
+	redGlow = { Color3.fromRGB(255, 40, 30), "Neon", 0 },
+	o2Green = { Color3.fromRGB(60, 200, 110), "Metal", 0 },
+	sunGlow = { Color3.fromRGB(255, 200, 80), "Neon", 0 },
+	sunCore = { Color3.fromRGB(255, 245, 200), "Neon", 0 },
+	mercury = { Color3.fromRGB(150, 140, 130), "Slate", 0 },
+	venus = { Color3.fromRGB(230, 190, 120), "SmoothPlastic", 0 },
+	earthBlue = { Color3.fromRGB(40, 110, 220), "SmoothPlastic", 0 },
+	earthGreen = { Color3.fromRGB(70, 170, 80), "Grass", 0 },
+	cloudWhite = { Color3.fromRGB(245, 248, 255), "SmoothPlastic", 0.2 },
+	mars = { Color3.fromRGB(200, 90, 50), "Slate", 0 },
+	jupiter1 = { Color3.fromRGB(215, 170, 120), "SmoothPlastic", 0 },
+	jupiter2 = { Color3.fromRGB(170, 110, 70), "SmoothPlastic", 0 },
+	saturn = { Color3.fromRGB(225, 200, 140), "SmoothPlastic", 0 },
+	ring = { Color3.fromRGB(210, 190, 150), "SmoothPlastic", 0.3 },
+	uranus = { Color3.fromRGB(150, 220, 230), "SmoothPlastic", 0 },
+	neptune = { Color3.fromRGB(60, 90, 220), "SmoothPlastic", 0 },
 	tint = { Color3.fromRGB(255, 70, 70), "Neon", 0 },
 	x = { Color3.fromRGB(255, 0, 255), "SmoothPlastic", 1 },
 }
@@ -1301,6 +1333,7 @@ local PROFILES = {
 	Earthquake = { wind = 30, weather = { "dust" }, tint = C3(225, 195, 150), shake = 0.6, debris = { "FxRock" } },
 	AcidRain = { wind = 45, weather = { "acid" }, tint = C3(170, 255, 140), shake = 0.1, debris = { "FxLeaf" } },
 	SharkAttack = { wind = 45, weather = { "rain" }, tint = C3(140, 220, 210), shake = 0.1, debris = { "FxDroplet" } },
+	MoonCollision = { wind = 55, weather = { "dust", "embers" }, tint = C3(255, 170, 130), shake = 0.2, debris = { "FxRock", "FxMeteorChunk" } },
 	Blizzard = { wind = 85, weather = { "snow" }, tint = C3(200, 230, 255), shake = 0.15, debris = { "FxIceShard" } },
 }
 
@@ -3047,4 +3080,1259 @@ function ShopItems.AddProducts(Config)
 end
 
 return ShopItems
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX_MoonCollision"><Properties><string name="Name">MoonCollision</string><ProtectedString name="Source"><![CDATA[-- MoonCollision  (ModuleScript, child of the LobbyUpgrade script - server only)
+--
+-- The Transcendent disaster. DisasterGameManager runs it through its ExtraDisasters hook
+-- (ServerStorage > ExtraDisasters > MoonCollision, a BindableFunction made here).
+--   1. Approach: a huge moon falls at 5,000 studs/s from 100,000 studs away (20 s). Every
+--      player's screen shows the countdown + distance (MoonFX). Nuclear bunkers rise out of the island.
+--   2. Impact: blast doors slam shut; anyone outside a bunker dies. The island loses its vegetation and
+--      turns yellow, the water boils away, the atmosphere is gone.
+--   3. Aftermath (45 s): survivors get a 15 s oxygen tank. Harvest palm trees for +8 s each
+--      (only while the tank is not full). Out of oxygen = eliminated.
+-- Everything the disaster changes on the island is put back when the round ends.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerStorage = game:GetService("ServerStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+
+local START_DISTANCE = 100000 -- studs
+local MOON_SPEED = 5000       -- studs per second  (=> 20 s countdown)
+local AFTERMATH = 45          -- seconds the round goes on after the crash
+local TANK_SECONDS = 15       -- a full oxygen tank
+local TREE_OXYGEN = 8         -- seconds of oxygen per harvested palm tree
+local DOORS_CLOSE_BEFORE = 2.5
+local BUNKER_COUNT = 2
+local BARREN_COLOR = Color3.fromRGB(214, 188, 104)
+
+local Moon = {}
+local Kit = nil
+local remote = nil
+local running = false
+
+local function mk(class, p, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(p) do
+		inst[k] = v
+	end
+	inst.Parent = parent
+	return inst
+end
+
+local function islandBounds()
+	local island = workspace:FindFirstChild("IslandMap")
+	local ground = island and (island:FindFirstChild("Ground") or island)
+	local water = island and island:FindFirstChild("Water")
+	local lo, hi
+	if ground then
+		for _, d in ipairs(ground:GetDescendants()) do
+			if d:IsA("BasePart") and not (water and water:IsAncestorOf(d)) then
+				local a, b = d.Position - d.Size / 2, d.Position + d.Size / 2
+				lo = lo and Vector3.new(math.min(lo.X, a.X), math.min(lo.Y, a.Y), math.min(lo.Z, a.Z)) or a
+				hi = hi and Vector3.new(math.max(hi.X, b.X), math.max(hi.Y, b.Y), math.max(hi.Z, b.Z)) or b
+			end
+		end
+	end
+	return lo, hi, island, ground
+end
+
+--------------------------------------------------------------------
+-- Bunkers
+--------------------------------------------------------------------
+-- local layout (studs): 34 wide (X), 26 deep (Z), 12 tall inside, door 10 x 9 on the front (-Z)
+local WALLS = {
+	{ Vector3.new(34, 2, 26), Vector3.new(0, 13, 0) },     -- roof
+	{ Vector3.new(2, 12, 26), Vector3.new(-16, 6, 0) },
+	{ Vector3.new(2, 12, 26), Vector3.new(16, 6, 0) },
+	{ Vector3.new(30, 12, 2), Vector3.new(0, 6, 12) },     -- back
+	{ Vector3.new(10, 12, 2), Vector3.new(-10, 6, -12) },  -- front left of the door
+	{ Vector3.new(10, 12, 2), Vector3.new(10, 6, -12) },
+	{ Vector3.new(10, 3, 2), Vector3.new(0, 10.5, -12) },  -- over the door
+	{ Vector3.new(30, 0.4, 22), Vector3.new(0, 0.2, 0) },  -- floor
+}
+local DOOR_OPEN = CFrame.new(10.5, 0, 0)
+
+local function buildBunker(folder, pos, faceDir)
+	local cf = CFrame.lookAt(pos, pos + faceDir)
+	local bunker = { cf = cf }
+	bunker.model = Kit.spawn("Bunker", cf - Vector3.new(0, 16, 0), { parent = folder, shadows = true })
+	for _, w in ipairs(WALLS) do
+		mk("Part", {
+			Name = "BunkerWall",
+			Size = w[1],
+			CFrame = cf * CFrame.new(w[2]),
+			Anchored = true,
+			Transparency = 1,
+			CastShadow = false,
+		}, folder)
+	end
+	bunker.doorClosed = cf * CFrame.new(0, 4.5, -13.8)
+	bunker.doorBlock = mk("Part", {
+		Name = "BlastDoor",
+		Size = Vector3.new(10, 9, 1.2),
+		CFrame = bunker.doorClosed * DOOR_OPEN,
+		Anchored = true,
+		Transparency = 1,
+	}, folder)
+	if bunker.model then
+		-- door + wheel positions relative to the model's pivot (the door piece is modelled shut)
+		local pivot = bunker.model:GetPivot()
+		bunker.doorVisual = bunker.model:FindFirstChild("door")
+		bunker.wheel = bunker.model:FindFirstChild("doorWheel")
+		bunker.doorRel = bunker.doorVisual and pivot:ToObjectSpace(bunker.doorVisual.CFrame)
+		bunker.wheelRel = bunker.wheel and pivot:ToObjectSpace(bunker.wheel.CFrame)
+		for _, name in ipairs({ "alarm", "lights" }) do
+			local p = bunker.model:FindFirstChild(name)
+			if p then
+				mk("PointLight", { Color = name == "alarm" and Color3.fromRGB(255, 40, 30) or Color3.fromRGB(255, 240, 210), Range = 26, Brightness = 2 }, p)
+			end
+		end
+	end
+	-- the model rises out of the ground (and the door slides open with it)
+	task.spawn(function()
+		local t0 = os.clock()
+		while bunker.model and bunker.model.Parent do
+			local a = math.min((os.clock() - t0) / 3, 1)
+			local e = TweenService:GetValue(a, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+			bunker.model:PivotTo(cf - Vector3.new(0, 16 * (1 - e), 0))
+			if a >= 1 then
+				break
+			end
+			RunService.Heartbeat:Wait()
+		end
+		Moon.setDoor(bunker, 1)
+	end)
+	return bunker
+end
+
+-- open = 1 (slid aside) .. 0 (shut)
+function Moon.setDoor(bunker, open)
+	local offset = CFrame.new(10.5 * open, 0, 0)
+	bunker.doorBlock.CFrame = bunker.doorClosed * offset
+	if bunker.model and bunker.model.Parent then
+		local pivot = bunker.model:GetPivot()
+		if bunker.doorRel then
+			bunker.doorVisual.CFrame = pivot * offset * bunker.doorRel
+		end
+		if bunker.wheelRel then -- the wheel turns as the door rolls
+			bunker.wheel.CFrame = pivot * offset * bunker.wheelRel * CFrame.Angles(0, 0, open * math.pi * 2)
+		end
+	end
+end
+
+local function slideDoors(bunkers, toOpen, seconds)
+	task.spawn(function()
+		local t0 = os.clock()
+		while true do
+			local a = math.min((os.clock() - t0) / seconds, 1)
+			local open = toOpen == 1 and a or 1 - a
+			for _, b in ipairs(bunkers) do
+				Moon.setDoor(b, TweenService:GetValue(open, Enum.EasingStyle.Quad, Enum.EasingDirection.InOut))
+			end
+			if a >= 1 then
+				break
+			end
+			RunService.Heartbeat:Wait()
+		end
+	end)
+end
+
+local function insideBunker(bunkers, pos)
+	for _, b in ipairs(bunkers) do
+		local p = b.cf:PointToObjectSpace(pos)
+		if math.abs(p.X) < 15.5 and math.abs(p.Z) < 11.5 and p.Y > -2 and p.Y < 12.5 then
+			return true
+		end
+	end
+	return false
+end
+
+--------------------------------------------------------------------
+-- World changes (all recorded so they can be undone)
+--------------------------------------------------------------------
+local undo = {}
+local function remember(inst, props)
+	local saved = {}
+	for _, k in ipairs(props) do
+		saved[k] = inst[k]
+	end
+	table.insert(undo, { inst = inst, saved = saved })
+end
+
+local function restoreWorld()
+	for i = #undo, 1, -1 do
+		local u = undo[i]
+		if u.inst.Parent then
+			for k, v in pairs(u.saved) do
+				pcall(function()
+					u.inst[k] = v
+				end)
+			end
+		end
+	end
+	undo = {}
+end
+
+local function palmTrees(island)
+	local trees = {}
+	local decor = island and island:FindFirstChild("Decor")
+	for _, d in ipairs(decor and decor:GetDescendants() or {}) do
+		if d:IsA("Model") and d.Name == "PalmTree" then
+			table.insert(trees, d)
+		end
+	end
+	return trees
+end
+
+local LEAFY = { Leaf = true, Crown = true, Coconut = true }
+
+local function barren(island, ground)
+	-- ground: vegetation burnt off, yellowish dust
+	for _, d in ipairs(ground and ground:GetDescendants() or {}) do
+		if d:IsA("BasePart") then
+			remember(d, { "Color", "Material" })
+			d.Material = Enum.Material.Sand
+			TweenService:Create(d, TweenInfo.new(2.5), { Color = d.Color:Lerp(BARREN_COLOR, 0.8) }):Play()
+		end
+	end
+	-- small plants vanish (palm trunks + rocks stay)
+	local decor = island and island:FindFirstChild("Decor")
+	for _, d in ipairs(decor and decor:GetDescendants() or {}) do
+		if d:IsA("BasePart") and not d:FindFirstAncestor("PalmTree") and not d:FindFirstAncestor("Rocks") then
+			remember(d, { "Transparency", "CanCollide" })
+			d.CanCollide = false
+			TweenService:Create(d, TweenInfo.new(1.5), { Transparency = 1 }):Play()
+		end
+	end
+	-- the sea boils away
+	local water = island and island:FindFirstChild("Water")
+	for _, d in ipairs(water and water:GetDescendants() or {}) do
+		if d:IsA("BasePart") then
+			remember(d, { "CFrame", "Transparency", "CanCollide", "CanTouch" })
+			d.CanCollide = false
+			TweenService:Create(d, TweenInfo.new(6, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+				CFrame = d.CFrame - Vector3.new(0, 400, 0),
+				Transparency = 1,
+			}):Play()
+			task.delay(6, function()
+				d.CanTouch = false
+			end)
+		end
+	end
+	local seafloor = island and island:FindFirstChild("Seafloor")
+	for _, d in ipairs(seafloor and seafloor:GetDescendants() or {}) do
+		if d:IsA("BasePart") then
+			remember(d, { "Color" })
+			TweenService:Create(d, TweenInfo.new(6), { Color = d.Color:Lerp(BARREN_COLOR, 0.6) }):Play()
+		end
+	end
+end
+
+local function stripTree(tree)
+	for _, p in ipairs(tree:GetDescendants()) do
+		if p:IsA("BasePart") and LEAFY[p.Name] then
+			remember(p, { "CFrame", "Transparency", "CanCollide", "Anchored" })
+			p.CanCollide = false
+			p.Anchored = true
+			local out = (p.Position - tree:GetPivot().Position) * Vector3.new(1, 0, 1)
+			out = out.Magnitude > 0.1 and out.Unit or Vector3.new(1, 0, 0)
+			TweenService:Create(p, TweenInfo.new(0.9, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+				CFrame = p.CFrame * CFrame.Angles(math.random() * 2, math.random() * 2, 0) + out * 8 - Vector3.new(0, 10, 0),
+				Transparency = 1,
+			}):Play()
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- Oxygen
+--------------------------------------------------------------------
+local oxygen = {} -- [Player] = seconds left
+
+local function attachTank(character)
+	local torso = character:FindFirstChild("UpperTorso") or character:FindFirstChild("Torso")
+	if not torso or not Kit.has("OxygenTank") then
+		return
+	end
+	local tank = Kit.spawn("OxygenTank", torso.CFrame * CFrame.new(0, 0.1, 0.85), { parent = character, shadows = false, name = "MoonOxygenTank" })
+	if not tank then
+		return
+	end
+	for _, p in ipairs(tank:GetDescendants()) do
+		if p:IsA("BasePart") then
+			p.Massless = true
+			p.CanCollide = false
+			mk("WeldConstraint", { Part0 = torso, Part1 = p }, p)
+			p.Anchored = false
+		end
+	end
+end
+
+local function setOxygen(player, value)
+	oxygen[player] = value
+	player:SetAttribute("Oxygen", value)
+end
+
+local function clearOxygen()
+	for player in pairs(oxygen) do
+		player:SetAttribute("Oxygen", nil)
+		player:SetAttribute("OxygenMax", nil)
+		local tank = player.Character and player.Character:FindFirstChild("MoonOxygenTank")
+		if tank then
+			tank:Destroy()
+		end
+	end
+	oxygen = {}
+end
+
+--------------------------------------------------------------------
+-- The disaster
+--------------------------------------------------------------------
+function Moon.run()
+	if running then
+		return
+	end
+	running = true
+	local folder = mk("Folder", { Name = "MoonCollision" }, workspace)
+	local ok, err = pcall(function()
+		local lo, hi, island, ground = islandBounds()
+		if not lo then
+			warn("[MoonCollision] IslandMap.Ground not found")
+			return
+		end
+		local center = (lo + hi) / 2
+		local span = math.max(hi.X - lo.X, hi.Z - lo.Z)
+		local inArea = function(pos)
+			local flat = (pos - center) * Vector3.new(1, 0, 1)
+			return flat.Magnitude < span * 0.8 + 80 and pos.Y < hi.Y + 250
+		end
+
+		-- where the moon comes from / lands (in the sea next to the island so the island survives)
+		local a = math.random() * math.pi * 2
+		local side = Vector3.new(math.cos(a), 0, math.sin(a))
+		local impact = Vector3.new(center.X, lo.Y, center.Z) + side * (span * 0.5 + 520)
+		local fromDir = (side * 0.55 + Vector3.new(0, 1, 0)).Unit -- moon comes down at a steep angle
+
+		-- bunkers: on both sides across the impact line, doors facing the island centre
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Include
+		params.FilterDescendantsInstances = { ground }
+		local across = side:Cross(Vector3.yAxis)
+		local bunkers, spots = {}, {}
+		for i = 1, BUNKER_COUNT do
+			local s = (i % 2 == 0) and 1 or -1
+			for _, reach in ipairs({ 0.24, 0.16, 0.08, 0 }) do
+				local xz = center + across * s * span * reach - side * span * 0.05
+				local hit = workspace:Raycast(Vector3.new(xz.X, hi.Y + 80, xz.Z), Vector3.new(0, -(hi.Y - lo.Y) - 200, 0), params)
+				if hit then
+					local face = (center - hit.Position) * Vector3.new(1, 0, 1)
+					face = face.Magnitude > 1 and face.Unit or -across * s
+					table.insert(bunkers, buildBunker(folder, hit.Position, face))
+					table.insert(spots, hit.Position)
+					break
+				end
+			end
+		end
+
+		local t0 = workspace:GetServerTimeNow()
+		local travel = START_DISTANCE / MOON_SPEED
+		remote:FireAllClients("Approach", {
+			t0 = t0,
+			distance = START_DISTANCE,
+			speed = MOON_SPEED,
+			impact = impact,
+			fromDir = fromDir,
+			bunkers = spots,
+			center = center,
+			span = span,
+		})
+
+		task.wait(travel - DOORS_CLOSE_BEFORE)
+		remote:FireAllClients("DoorsClosing")
+		slideDoors(bunkers, 0, 1.6)
+		task.wait(DOORS_CLOSE_BEFORE)
+
+		-- IMPACT
+		local survivors = {}
+		for _, player in ipairs(Players:GetPlayers()) do
+			local character = player.Character
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+			if root and humanoid and humanoid.Health > 0 and inArea(root.Position) then
+				if insideBunker(bunkers, root.Position) then
+					table.insert(survivors, player)
+				else
+					humanoid.Health = 0
+					root.AssemblyLinearVelocity = (root.Position - impact).Unit * 180 + Vector3.new(0, 120, 0)
+				end
+			end
+		end
+		barren(island, ground)
+		local endsAt = workspace:GetServerTimeNow() + AFTERMATH
+		remote:FireAllClients("Impact", { impact = impact, endsAt = endsAt, center = center, span = span })
+		task.delay(3.5, slideDoors, bunkers, 1, 2)
+
+		-- oxygen tanks for everyone who made it
+		for _, player in ipairs(survivors) do
+			player:SetAttribute("OxygenMax", TANK_SECONDS)
+			setOxygen(player, TANK_SECONDS)
+			if player.Character then
+				attachTank(player.Character)
+			end
+		end
+
+		-- harvestable palm trees
+		for _, tree in ipairs(palmTrees(island)) do
+			local top, topY = nil, -math.huge
+			for _, p in ipairs(tree:GetDescendants()) do
+				if p:IsA("BasePart") and p.Name == "Trunk" and p.Position.Y > topY then
+					top, topY = p, p.Position.Y
+				end
+			end
+			if top then
+				local bottom = tree:FindFirstChild("Trunk") or top
+				local prompt = mk("ProximityPrompt", {
+					Name = "MoonHarvest",
+					ActionText = "Harvest Oxygen",
+					ObjectText = ("Palm Tree  (+%d s O2)"):format(TREE_OXYGEN),
+					HoldDuration = 0.6,
+					MaxActivationDistance = 14,
+					RequiresLineOfSight = false,
+				}, bottom)
+				prompt.Triggered:Connect(function(player)
+					local left = oxygen[player]
+					if not left or not prompt.Enabled then
+						return
+					end
+					if left >= TANK_SECONDS - 0.05 then
+						remote:FireClient(player, "Full")
+						return
+					end
+					prompt.Enabled = false
+					setOxygen(player, math.min(TANK_SECONDS, left + TREE_OXYGEN))
+					stripTree(tree)
+					remote:FireAllClients("Harvest", { pos = top.Position, userId = player.UserId })
+				end)
+				table.insert(undo, { inst = prompt, destroy = true })
+			end
+		end
+
+		-- breathe
+		local last = os.clock()
+		while workspace:GetServerTimeNow() < endsAt do
+			RunService.Heartbeat:Wait()
+			local now = os.clock()
+			local dt = now - last
+			last = now
+			for player, left in pairs(oxygen) do
+				local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+				if not player.Parent or not humanoid or humanoid.Health <= 0 then
+					oxygen[player] = nil
+					player:SetAttribute("Oxygen", nil)
+				else
+					left -= dt
+					if left <= 0 then
+						oxygen[player] = nil
+						player:SetAttribute("Oxygen", 0)
+						humanoid.Health = 0
+					else
+						oxygen[player] = left
+						if math.floor(left * 10) ~= math.floor((left + dt) * 10) then
+							player:SetAttribute("Oxygen", left)
+						end
+					end
+				end
+			end
+		end
+	end)
+	if not ok then
+		warn("[MoonCollision] " .. tostring(err))
+	end
+	-- clean up whatever happened
+	remote:FireAllClients("End")
+	clearOxygen()
+	for _, u in ipairs(undo) do
+		if u.destroy and u.inst.Parent then
+			u.inst:Destroy()
+		end
+	end
+	restoreWorld()
+	folder:Destroy()
+	running = false
+end
+
+function Moon.init(kit)
+	Kit = kit
+	remote = ReplicatedStorage:FindFirstChild("MoonCollisionFX") or mk("RemoteEvent", { Name = "MoonCollisionFX" }, ReplicatedStorage)
+	local extra = ServerStorage:FindFirstChild("ExtraDisasters") or mk("Folder", { Name = "ExtraDisasters" }, ServerStorage)
+	local fn = extra:FindFirstChild("MoonCollision") or mk("BindableFunction", { Name = "MoonCollision" }, extra)
+	fn.OnInvoke = function()
+		Moon.run()
+		return true
+	end
+	Players.PlayerRemoving:Connect(function(player)
+		oxygen[player] = nil
+	end)
+end
+
+return Moon
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_MoonFX"><Properties><string name="Name">MoonFX</string><bool name="Disabled">false</bool><token name="RunContext">2</token><ProtectedString name="Source"><![CDATA[-- MoonFX  (Script with RunContext = Client, child of the LobbyUpgrade script)
+--
+-- LobbyUpgrade moves this into ReplicatedStorage so it runs on every player's device.
+-- Everything you SEE and HEAR of the Moon Collision disaster (the server part is MoonCollision):
+--   * top of the screen: countdown + how far away the moon is (studs), big final-10 count, bunker markers
+--   * the Blender moon falling, heating up and trailing fire; rumble, roar, sky turning red
+--   * impact: white-out, shockwave rings, moon debris raining down, dust wall, steam as the sea boils
+--   * airless sky: black space, stars and the Blender solar system (Sun, Earth, Saturn ...)
+--   * bottom middle: your oxygen tank (seconds left), suffocation effects, tree-harvest animation
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local remote = ReplicatedStorage:WaitForChild("MoonCollisionFX")
+local props = ReplicatedStorage:WaitForChild("LobbyKitProps", 30)
+local assets = ReplicatedStorage:WaitForChild("DisasterAssets")
+local soundsFolder = assets:FindFirstChild("Sounds")
+
+local MOON_SCALE = 9          -- Blender moon radius 100 -> 900 studs
+local VISUAL_SQUASH = 0.08    -- 100,000 real studs are drawn 8,000 studs away (beyond that Roblox won't draw it)
+local TEX_SPARK = "rbxasset://textures/particles/sparkles_main.dds"
+local TEX_SMOKE = "rbxasset://textures/particles/smoke_main.dds"
+local TEX_FIRE = "rbxasset://textures/particles/fire_main.dds"
+local TICK_SOUND = "rbxasset://sounds/volume_slider.ogg"
+local BOOM_SOUND = "rbxasset://sounds/impact_explosion_03.mp3"
+local C3 = Color3.fromRGB
+local WHITE = Color3.new(1, 1, 1)
+
+--------------------------------------------------------------------
+-- helpers
+--------------------------------------------------------------------
+local fx = Instance.new("Folder")
+fx.Name = "MoonFXLocal"
+fx.Parent = workspace
+
+local function mk(class, p, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(p) do
+		inst[k] = v
+	end
+	inst.Parent = parent
+	return inst
+end
+local function ns(...)
+	local a, pts = { ... }, {}
+	for i = 1, #a, 2 do
+		table.insert(pts, NumberSequenceKeypoint.new(a[i], a[i + 1]))
+	end
+	return NumberSequence.new(pts)
+end
+local function ghost(cf, size)
+	return mk("Part", { Size = size or Vector3.one, CFrame = cf, Anchored = true, CanCollide = false, CanTouch = false, CanQuery = false, CastShadow = false, Transparency = 1 }, fx)
+end
+local function emitter(parent, p)
+	local base = { LightInfluence = 0, Rate = 0 }
+	for k, v in pairs(p) do
+		base[k] = v
+	end
+	return mk("ParticleEmitter", base, parent)
+end
+local function tween(obj, t, goal, style, dir)
+	local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), goal)
+	tw:Play()
+	return tw
+end
+local function prop(name, scale, tint)
+	local t = props and props:FindFirstChild(name)
+	if not t then
+		return nil
+	end
+	local m = t:Clone()
+	if scale and math.abs(scale - 1) > 0.01 then
+		m:ScaleTo(scale)
+	end
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.CastShadow = false
+			if tint and d.Material == Enum.Material.Neon then
+				d.Color = tint
+			end
+		end
+	end
+	m.Parent = fx
+	return m
+end
+local function sound(name, volume, speed, parent, looped)
+	local s
+	if string.find(name, "://", 1, true) then
+		s = mk("Sound", { SoundId = name }, nil)
+	else
+		local t = soundsFolder and soundsFolder:FindFirstChild(name)
+		if not t then
+			return nil
+		end
+		s = t:Clone()
+	end
+	s.Volume = volume
+	s.PlaybackSpeed = speed or 1
+	s.Looped = looped == true
+	s.RollOffMaxDistance = 10000
+	s.Parent = parent or SoundService
+	s:Play()
+	if not looped then
+		Debris:AddItem(s, 15)
+	end
+	return s
+end
+local function fmt(n)
+	local s = tostring(math.floor(n))
+	while true do
+		local k
+		s, k = string.gsub(s, "^(-?%d+)(%d%d%d)", "%1,%2")
+		if k == 0 then
+			return s
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- camera shake
+--------------------------------------------------------------------
+local shakeBase, kicks = 0, {}
+local function kick(amp, dur)
+	table.insert(kicks, { amp = amp, t = os.clock(), dur = dur })
+end
+RunService:BindToRenderStep("MoonFXShake", Enum.RenderPriority.Camera.Value + 2, function()
+	if camera.CameraType ~= Enum.CameraType.Custom then
+		return
+	end
+	local now, amp = os.clock(), shakeBase
+	for i = #kicks, 1, -1 do
+		local k = kicks[i]
+		local a = (now - k.t) / k.dur
+		if a >= 1 then
+			table.remove(kicks, i)
+		else
+			amp += k.amp * (1 - a) ^ 2
+		end
+	end
+	if amp > 0.001 then
+		local t = now * 24
+		camera.CFrame *= CFrame.Angles(math.noise(t, 1.3) * amp * 0.04, math.noise(2.1, t) * amp * 0.04, math.noise(t, t) * amp * 0.025)
+	end
+end)
+
+--------------------------------------------------------------------
+-- UI
+--------------------------------------------------------------------
+local gui = mk("ScreenGui", { Name = "MoonCollisionUI", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 30, Enabled = false }, player:WaitForChild("PlayerGui"))
+local whiteout = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = WHITE, BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 50 }, gui)
+local redPulse = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = C3(255, 20, 20), BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 1 }, gui)
+
+local function label(parent, p)
+	local base = { BackgroundTransparency = 1, Font = Enum.Font.LuckiestGuy, TextScaled = true, TextColor3 = WHITE }
+	for k, v in pairs(p) do
+		base[k] = v
+	end
+	local l = mk("TextLabel", base, parent)
+	mk("UIStroke", { Color = C3(0, 0, 0), Thickness = 3 }, l)
+	return l
+end
+
+-- top: countdown panel
+local top = mk("Frame", { AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 52), Size = UDim2.fromOffset(520, 128), BackgroundColor3 = C3(20, 10, 18), BackgroundTransparency = 0.2, ZIndex = 10 }, gui)
+mk("UICorner", { CornerRadius = UDim.new(0, 16) }, top)
+local topStroke = mk("UIStroke", { Color = C3(255, 60, 40), Thickness = 4 }, top)
+mk("UISizeConstraint", { MaxSize = Vector2.new(520, 128) }, top)
+local topTitle = label(top, { ZIndex = 11, Text = "🌕 MOON COLLISION", TextColor3 = C3(255, 90, 60), Position = UDim2.new(0.04, 0, 0.05, 0), Size = UDim2.new(0.92, 0, 0.24, 0) })
+local topTimer = label(top, { ZIndex = 11, Text = "00.0", Position = UDim2.new(0.04, 0, 0.3, 0), Size = UDim2.new(0.44, 0, 0.36, 0), TextXAlignment = Enum.TextXAlignment.Left })
+local topDist = label(top, { ZIndex = 11, Text = "0 studs", TextColor3 = C3(255, 220, 120), Position = UDim2.new(0.5, 0, 0.32, 0), Size = UDim2.new(0.46, 0, 0.3, 0), TextXAlignment = Enum.TextXAlignment.Right })
+local barBack = mk("Frame", { ZIndex = 11, Position = UDim2.new(0.04, 0, 0.7, 0), Size = UDim2.new(0.92, 0, 0.1, 0), BackgroundColor3 = C3(60, 40, 50) }, top)
+mk("UICorner", { CornerRadius = UDim.new(1, 0) }, barBack)
+local barFill = mk("Frame", { ZIndex = 12, Size = UDim2.fromScale(0, 1), BackgroundColor3 = C3(255, 70, 40) }, barBack)
+mk("UICorner", { CornerRadius = UDim.new(1, 0) }, barFill)
+local topHint = label(top, { ZIndex = 11, Font = Enum.Font.GothamBlack, Text = "☢ GET INTO A NUCLEAR BUNKER! ☢", TextColor3 = C3(255, 230, 60), Position = UDim2.new(0.04, 0, 0.83, 0), Size = UDim2.new(0.92, 0, 0.15, 0) })
+
+-- centre: final 10 seconds
+local bigCount = label(gui, { ZIndex = 20, Visible = false, AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.45), Size = UDim2.fromScale(0.3, 0.25), TextColor3 = C3(255, 40, 30) })
+local bigScale = mk("UIScale", {}, bigCount)
+
+-- bottom middle: oxygen
+local o2 = mk("Frame", { Visible = false, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -28), Size = UDim2.fromOffset(420, 96), BackgroundColor3 = C3(14, 22, 30), BackgroundTransparency = 0.15, ZIndex = 10 }, gui)
+mk("UICorner", { CornerRadius = UDim.new(0, 18) }, o2)
+local o2Stroke = mk("UIStroke", { Color = C3(80, 220, 140), Thickness = 4 }, o2)
+local tankView = mk("ViewportFrame", { ZIndex = 11, BackgroundTransparency = 1, Position = UDim2.fromOffset(6, 4), Size = UDim2.fromOffset(84, 88), Ambient = C3(180, 180, 190), LightDirection = Vector3.new(-1, -1, -1) }, o2)
+do
+	local tank = prop("OxygenTank", 1)
+	if tank then
+		tank.Parent = tankView
+		local cam = mk("Camera", { FieldOfView = 40 }, tankView)
+		tankView.CurrentCamera = cam
+		local cf, size = tank:GetBoundingBox()
+		cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(size.Y * 0.9, size.Y * 0.3, size.Y * 1.6), cf.Position)
+	end
+end
+local o2Title = label(o2, { ZIndex = 11, Text = "OXYGEN", TextColor3 = C3(140, 255, 180), Position = UDim2.fromOffset(96, 6), Size = UDim2.new(0.4, 0, 0, 26), TextXAlignment = Enum.TextXAlignment.Left })
+local o2Secs = label(o2, { ZIndex = 11, Text = "15.0 s", AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 6), Size = UDim2.new(0.35, 0, 0, 26), TextXAlignment = Enum.TextXAlignment.Right })
+local o2Back = mk("Frame", { ZIndex = 11, Position = UDim2.fromOffset(96, 38), Size = UDim2.new(1, -110, 0, 22), BackgroundColor3 = C3(40, 50, 60) }, o2)
+mk("UICorner", { CornerRadius = UDim.new(1, 0) }, o2Back)
+local o2Fill = mk("Frame", { ZIndex = 12, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C3(80, 230, 140) }, o2Back)
+mk("UICorner", { CornerRadius = UDim.new(1, 0) }, o2Fill)
+mk("UIGradient", { Rotation = 90, Color = ColorSequence.new(WHITE, C3(170, 170, 170)) }, o2Fill)
+local o2Hint = label(o2, { ZIndex = 11, Font = Enum.Font.GothamBold, Text = "Harvest palm trees for +8 s", TextColor3 = C3(200, 230, 255), Position = UDim2.fromOffset(96, 66), Size = UDim2.new(1, -110, 0, 20), TextXAlignment = Enum.TextXAlignment.Left })
+
+--------------------------------------------------------------------
+-- state
+--------------------------------------------------------------------
+local state = nil
+
+local function stopAll()
+	local s = state
+	state = nil
+	shakeBase = 0
+	gui.Enabled = false
+	bigCount.Visible = false
+	o2.Visible = false
+	redPulse.BackgroundTransparency = 1
+	if not s then
+		return
+	end
+	for _, c in ipairs(s.conns) do
+		c:Disconnect()
+	end
+	for _, snd in ipairs(s.loops) do
+		tween(snd, 2, { Volume = 0 })
+		Debris:AddItem(snd, 2.1)
+	end
+	for _, m in ipairs(s.models) do
+		m:Destroy()
+	end
+	-- give the sky back
+	if s.lighting then
+		for k, v in pairs(s.lighting) do
+			Lighting[k] = v
+		end
+		for _, child in ipairs(s.storedSky) do
+			child.Parent = Lighting
+		end
+		if s.space then
+			s.space:Destroy()
+		end
+	end
+	if s.cc then
+		tween(s.cc, 2, { TintColor = WHITE, Contrast = 0, Saturation = 0, Brightness = 0 })
+		Debris:AddItem(s.cc, 2.1)
+	end
+end
+
+local function track(s, m)
+	if m then
+		table.insert(s.models, m)
+	end
+	return m
+end
+
+--------------------------------------------------------------------
+-- approach
+--------------------------------------------------------------------
+local function approach(data)
+	stopAll()
+	local s = { conns = {}, loops = {}, models = {}, data = data }
+	state = s
+	gui.Enabled = true
+	top.Visible = true
+	topTitle.Text = "🌕 MOON COLLISION"
+	topHint.Text = "☢ GET INTO A NUCLEAR BUNKER! ☢"
+	topHint.TextColor3 = C3(255, 230, 60)
+
+	s.cc = mk("ColorCorrectionEffect", { Name = "MoonFX" }, Lighting)
+
+	-- the moon
+	local moon = track(s, prop("Moon", MOON_SCALE))
+	local heat = moon and moon:FindFirstChild("heat")
+	local cracks = moon and moon:FindFirstChild("cracks")
+	if heat then
+		heat.Color = C3(255, 110, 40)
+		heat.Transparency = 1
+		emitter(heat, {
+			Texture = TEX_FIRE,
+			Color = ColorSequence.new(C3(255, 220, 120), C3(255, 60, 20)),
+			LightEmission = 1,
+			Size = ns(0, 260, 1, 60),
+			Transparency = ns(0, 0.2, 1, 1),
+			Lifetime = NumberRange.new(1.2, 2),
+			Speed = NumberRange.new(0, 40),
+			Rate = 0,
+		})
+	end
+	if cracks then
+		cracks.Transparency = 1
+	end
+
+	-- bunker markers
+	for _, pos in ipairs(data.bunkers) do
+		local anchor = track(s, ghost(CFrame.new(pos + Vector3.new(0, 22, 0))))
+		local bb = mk("BillboardGui", { Size = UDim2.fromOffset(170, 60), AlwaysOnTop = true, LightInfluence = 0, MaxDistance = 5000 }, anchor)
+		local l = label(bb, { Size = UDim2.fromScale(1, 1), Text = "☢ BUNKER", TextColor3 = C3(255, 220, 40) })
+		table.insert(s.conns, RunService.RenderStepped:Connect(function()
+			local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+			if root then
+				l.Text = ("☢ BUNKER\n%s studs"):format(fmt((root.Position - pos).Magnitude))
+			end
+		end))
+	end
+
+	-- sound bed
+	local rumble = sound("Thunder", 0, 0.25, nil, true)
+	local roar = sound("Whoosh", 0, 0.3, nil, true)
+	for _, snd in ipairs({ rumble, roar }) do
+		if snd then
+			table.insert(s.loops, snd)
+		end
+	end
+
+	local lastSecond = nil
+	table.insert(s.conns, RunService.RenderStepped:Connect(function()
+		local elapsed = workspace:GetServerTimeNow() - data.t0
+		local d = math.max(0, data.distance - data.speed * elapsed)
+		local left = d / data.speed
+		local close = 1 - d / data.distance -- 0 far .. 1 impact
+
+		topTimer.Text = ("T-%04.1f s"):format(left)
+		topDist.Text = fmt(d) .. " studs"
+		barFill.Size = UDim2.fromScale(close, 1)
+		topStroke.Color = C3(255, 60, 40):Lerp(WHITE, (math.sin(os.clock() * (4 + close * 14)) + 1) / 2 * close)
+
+		-- tick each second, slam the last ten
+		local sec = math.ceil(left)
+		if sec ~= lastSecond and left > 0 then
+			lastSecond = sec
+			sound(TICK_SOUND, 0.6 + close * 0.4, 0.8 + close * 0.6)
+			if sec <= 10 then
+				bigCount.Visible = true
+				bigCount.Text = tostring(sec)
+				bigScale.Scale = 2.2
+				bigCount.TextTransparency = 0
+				tween(bigScale, 0.25, { Scale = 1 }, Enum.EasingStyle.Back)
+				tween(bigCount, 0.9, { TextTransparency = 0.6 })
+				kick(0.4 + close, 0.3)
+				redPulse.BackgroundTransparency = 0.75
+				tween(redPulse, 0.6, { BackgroundTransparency = 1 })
+				if sec <= 3 then
+					sound("Explosion", 0.4, 0.5)
+				end
+			end
+		end
+
+		-- inside a bunker?
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if root and s.doorsClosing == nil then
+			local safe = false
+			for _, pos in ipairs(data.bunkers) do
+				local flat = (root.Position - pos) * Vector3.new(1, 0, 1)
+				if flat.Magnitude < 13 and math.abs(root.Position.Y - pos.Y) < 14 then
+					safe = true
+				end
+			end
+			topHint.Text = safe and "✔ YOU ARE IN THE BUNKER - STAY INSIDE!" or "☢ GET INTO A NUCLEAR BUNKER! ☢"
+			topHint.TextColor3 = safe and C3(120, 255, 140) or C3(255, 230, 60)
+		end
+
+		-- the moon itself
+		if moon then
+			local vis = d * VISUAL_SQUASH + 100 * MOON_SCALE * 0.75
+			moon:PivotTo(CFrame.new(data.impact + data.fromDir * vis) * CFrame.Angles(elapsed * 0.03, elapsed * 0.05, 0))
+			if heat then
+				heat.Transparency = 1 - math.clamp((close - 0.55) / 0.45, 0, 1) * 0.55
+				heat:FindFirstChildOfClass("ParticleEmitter").Rate = close > 0.5 and (close - 0.5) * 120 or 0
+			end
+			if cracks then
+				cracks.Transparency = 1 - math.clamp((close - 0.3) / 0.6, 0, 1)
+			end
+		end
+
+		-- the world reacts
+		shakeBase = close ^ 2 * 1.2
+		s.cc.TintColor = WHITE:Lerp(C3(255, 150, 110), close * 0.7)
+		s.cc.Contrast = close * 0.2
+		if rumble then
+			rumble.Volume = 0.2 + close * 0.8
+		end
+		if roar then
+			roar.Volume = close ^ 2 * 1
+			roar.PlaybackSpeed = 0.25 + close * 0.25
+		end
+	end))
+
+	task.delay(math.max(0, data.distance / data.speed - 8), function()
+		if state == s then
+			sound("DragonRoar", 1, 0.22) -- the moon tearing through the atmosphere
+		end
+	end)
+end
+
+--------------------------------------------------------------------
+-- impact
+--------------------------------------------------------------------
+local function goAirless(s, data)
+	-- strip the atmosphere: black sky, stars, harsh light (all local, put back at the end)
+	s.lighting = {}
+	for _, k in ipairs({ "ClockTime", "Brightness", "Ambient", "OutdoorAmbient", "FogEnd", "FogStart", "ExposureCompensation", "EnvironmentDiffuseScale", "EnvironmentSpecularScale" }) do
+		s.lighting[k] = Lighting[k]
+	end
+	s.storedSky = {}
+	s.space = mk("Folder", { Name = "MoonFXStoredSky" }, ReplicatedStorage)
+	for _, child in ipairs(Lighting:GetChildren()) do
+		if child:IsA("Atmosphere") or child:IsA("Sky") or child:IsA("Clouds") then
+			child.Parent = s.space
+			table.insert(s.storedSky, child)
+		end
+	end
+	local clouds = workspace.Terrain:FindFirstChildOfClass("Clouds")
+	if clouds then
+		local was = clouds.Enabled
+		clouds.Enabled = false
+		table.insert(s.conns, { Disconnect = function()
+			clouds.Enabled = was
+		end })
+	end
+	-- default sky textures at midnight = black space; lots of stars, no Roblox sun/moon (ours are Blender models)
+	mk("Sky", { Name = "MoonFXSpace", StarCount = 5000, CelestialBodiesShown = false }, Lighting)
+	table.insert(s.conns, { Disconnect = function()
+		local sky = Lighting:FindFirstChild("MoonFXSpace")
+		if sky then
+			sky:Destroy()
+		end
+	end })
+	Lighting.ClockTime = 0
+	Lighting.Brightness = 3
+	Lighting.Ambient = C3(95, 88, 80)
+	Lighting.OutdoorAmbient = C3(170, 160, 140)
+	Lighting.FogStart = 100000
+	Lighting.FogEnd = 100000
+	Lighting.ExposureCompensation = 0.2
+	tween(s.cc, 3, { TintColor = C3(255, 238, 200), Contrast = 0.25, Saturation = -0.2 })
+
+	-- the solar system hangs in the black sky
+	local c = data.center
+	local planets = {
+		{ "Sun", 7, Vector3.new(-3800, 900, -2600), 0.02 },
+		{ "Mercury", 5, Vector3.new(-2600, 1200, -3200), 0.2 },
+		{ "Venus", 5, Vector3.new(-1500, 1500, -3600), 0.1 },
+		{ "Earth", 12, Vector3.new(400, 1300, -3200), 0.15 },
+		{ "Mars", 6, Vector3.new(1800, 1700, -2800), 0.15 },
+		{ "Jupiter", 5, Vector3.new(3200, 1400, -1200), 0.08 },
+		{ "Saturn", 5, Vector3.new(3400, 1600, 1200), 0.05 },
+		{ "Uranus", 4, Vector3.new(1800, 1900, 3000), 0.07 },
+		{ "Neptune", 4, Vector3.new(-600, 2000, 3400), 0.07 },
+	}
+	for _, p in ipairs(planets) do
+		local m = track(s, prop(p[1], p[2]))
+		if m then
+			local base = CFrame.new(c + p[3])
+			m:PivotTo(base)
+			table.insert(s.conns, RunService.RenderStepped:Connect(function()
+				m:PivotTo(base * CFrame.Angles(0.3, os.clock() * p[4], 0))
+			end))
+		end
+	end
+end
+
+local function impact(data)
+	local s = state
+	if not s then
+		return
+	end
+	s.impacted = true
+	top.Visible = true
+	bigCount.Visible = false
+	shakeBase = 0
+
+	-- white-out + the loudest thing in the game
+	whiteout.BackgroundTransparency = 0
+	tween(whiteout, 3, { BackgroundTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	kick(4.5, 3.5)
+	sound("Explosion", 1, 0.35)
+	sound("Explosion", 1, 0.6)
+	sound(BOOM_SOUND, 1, 0.5)
+	sound("Thunder", 1, 0.4)
+	task.delay(0.6, sound, "DragonRoar", 0.9, 0.18)
+	task.delay(1.2, sound, "Thunder", 0.9, 0.3)
+	for _, snd in ipairs(s.loops) do
+		tween(snd, 4, { Volume = 0.15 })
+	end
+
+	local pos = data.impact
+	-- the moon settles into the sea, glowing
+	for _, m in ipairs(s.models) do
+		if m.Name == "Moon" then
+			local cracks = m:FindFirstChild("cracks")
+			if cracks then
+				cracks.Transparency = 0
+			end
+			local heat = m:FindFirstChild("heat")
+			if heat then
+				tween(heat, 6, { Transparency = 1 })
+				local e = heat:FindFirstChildOfClass("ParticleEmitter")
+				if e then
+					e.Rate = 25
+				end
+			end
+		end
+	end
+
+	-- shockwave rings sweeping over the island
+	for i, color in ipairs({ C3(255, 150, 60), WHITE, C3(255, 90, 40) }) do
+		task.delay((i - 1) * 0.35, function()
+			local ring = track(s, prop("FxShockRing", 2, color))
+			if not ring then
+				return
+			end
+			local t0 = os.clock()
+			while ring.Parent do
+				local a = math.min((os.clock() - t0) / 4.5, 1)
+				ring:ScaleTo(2 + 78 * (1 - (1 - a) ^ 3))
+				ring:PivotTo(CFrame.new(pos + Vector3.new(0, 20 + i * 6, 0)))
+				for _, d in ipairs(ring:GetDescendants()) do
+					if d:IsA("BasePart") then
+						d.LocalTransparencyModifier = a
+					end
+				end
+				if a >= 1 then
+					break
+				end
+				RunService.RenderStepped:Wait()
+			end
+			ring:Destroy()
+		end)
+	end
+
+	-- dust wall + fire plume at the impact
+	local holder = track(s, ghost(CFrame.new(pos + Vector3.new(0, 40, 0)), Vector3.new(300, 10, 300)))
+	emitter(holder, {
+		Texture = TEX_SMOKE,
+		Color = ColorSequence.new(C3(150, 130, 110), C3(80, 70, 65)),
+		Size = ns(0, 80, 1, 260),
+		Transparency = ns(0, 0.2, 1, 1),
+		Lifetime = NumberRange.new(5, 9),
+		Speed = NumberRange.new(60, 160),
+		SpreadAngle = Vector2.new(80, 80),
+		EmissionDirection = Enum.NormalId.Top,
+		Drag = 0.6,
+	}):Emit(70)
+	local plume = emitter(holder, {
+		Texture = TEX_FIRE,
+		Color = ColorSequence.new(C3(255, 230, 140), C3(255, 70, 20)),
+		LightEmission = 1,
+		Size = ns(0, 120, 1, 20),
+		Transparency = ns(0, 0, 1, 1),
+		Lifetime = NumberRange.new(1.5, 3),
+		Speed = NumberRange.new(100, 220),
+		SpreadAngle = Vector2.new(25, 25),
+		EmissionDirection = Enum.NormalId.Top,
+		Rate = 60,
+	})
+	task.delay(6, function()
+		plume.Rate = 8
+	end)
+
+	-- moon debris raining across the sky
+	for i = 1, 26 do
+		local chunk = track(s, prop(i % 3 == 0 and "FxRock" or "FxMeteorChunk", math.random(5, 12)))
+		if chunk then
+			local body = chunk:FindFirstChildWhichIsA("BasePart", true)
+			if body then
+				emitter(body, {
+					Texture = TEX_FIRE,
+					Color = ColorSequence.new(C3(255, 200, 90), C3(255, 60, 20)),
+					LightEmission = 1,
+					Size = ns(0, 18, 1, 0),
+					Lifetime = NumberRange.new(0.6, 1),
+					Rate = 40,
+				})
+			end
+			local toward = (data.center - pos) * Vector3.new(1, 0, 1)
+			toward = toward.Magnitude > 1 and toward.Unit or Vector3.xAxis
+			local vel = (toward * math.random(120, 380) + Vector3.new(math.random(-160, 160), math.random(260, 480), math.random(-160, 160)))
+			local spin = CFrame.Angles(math.random() * 0.1, math.random() * 0.1, math.random() * 0.1)
+			task.spawn(function()
+				local p, rot, t0 = pos + Vector3.new(0, 60, 0), CFrame.new(), os.clock()
+				while chunk.Parent and os.clock() - t0 < 6 do
+					local dt = RunService.RenderStepped:Wait()
+					vel += Vector3.new(0, -196, 0) * dt
+					p += vel * dt
+					rot *= spin
+					chunk:PivotTo(CFrame.new(p) * rot)
+					if p.Y < data.center.Y - 60 then
+						break
+					end
+				end
+				chunk:Destroy()
+			end)
+		end
+	end
+
+	-- the sea boils away: steam rising off the water
+	local island = workspace:FindFirstChild("IslandMap")
+	local water = island and island:FindFirstChild("Water")
+	local parts = {}
+	for _, d in ipairs(water and water:GetDescendants() or {}) do
+		if d:IsA("BasePart") then
+			table.insert(parts, d)
+		end
+	end
+	for i = 1, math.min(24, #parts) do
+		local w = parts[math.random(1, #parts)]
+		local steam = track(s, ghost(CFrame.new(w.Position + Vector3.new(0, w.Size.Y / 2, 0)), Vector3.new(math.min(w.Size.X, 120), 1, math.min(w.Size.Z, 120))))
+		local e = emitter(steam, {
+			Texture = TEX_SMOKE,
+			Color = ColorSequence.new(C3(240, 245, 250)),
+			Size = ns(0, 10, 1, 40),
+			Transparency = ns(0, 0.5, 1, 1),
+			Lifetime = NumberRange.new(3, 5),
+			Speed = NumberRange.new(10, 25),
+			EmissionDirection = Enum.NormalId.Top,
+			Rate = 14,
+		})
+		task.delay(7, function()
+			e.Enabled = false
+		end)
+	end
+	sound("WaterSplash", 0.8, 0.5)
+	task.delay(0.8, sound, "Whoosh", 0.8, 0.5)
+
+	goAirless(s, data)
+
+	-- aftermath timer + oxygen UI
+	topTitle.Text = "🌑 NO ATMOSPHERE"
+	topHint.Text = "Harvest palm trees for oxygen!"
+	topHint.TextColor3 = C3(140, 255, 180)
+	topStroke.Color = C3(120, 200, 255)
+	barFill.BackgroundColor3 = C3(120, 200, 255)
+	local total = data.endsAt - workspace:GetServerTimeNow()
+	local lastLowTick = 0
+	table.insert(s.conns, RunService.RenderStepped:Connect(function()
+		local left = math.max(0, data.endsAt - workspace:GetServerTimeNow())
+		topTimer.Text = ("0:%02d"):format(math.ceil(left))
+		topDist.Text = "SURVIVE!"
+		barFill.Size = UDim2.fromScale(left / math.max(total, 1), 1)
+
+		local oxygen = player:GetAttribute("Oxygen")
+		local maxO2 = player:GetAttribute("OxygenMax") or 15
+		o2.Visible = oxygen ~= nil
+		if oxygen then
+			local f = math.clamp(oxygen / maxO2, 0, 1)
+			o2Fill.Size = UDim2.fromScale(f, 1)
+			o2Fill.BackgroundColor3 = C3(255, 60, 50):Lerp(C3(80, 230, 140), math.clamp((f - 0.15) / 0.5, 0, 1))
+			o2Secs.Text = ("%.1f s"):format(oxygen)
+			local full = oxygen >= maxO2 - 0.05
+			o2Hint.Text = full and "TANK FULL - wait before harvesting" or "Harvest palm trees: +8 s"
+			o2Hint.TextColor3 = full and C3(255, 230, 90) or C3(200, 230, 255)
+			local low = oxygen < 5
+			o2Stroke.Color = low and C3(255, 60, 50):Lerp(WHITE, (math.sin(os.clock() * 12) + 1) / 2) or C3(80, 220, 140)
+			redPulse.BackgroundTransparency = low and (0.7 + 0.25 * (math.sin(os.clock() * 6) + 1) / 2) or 1
+			if low and os.clock() - lastLowTick > 1 then
+				lastLowTick = os.clock()
+				sound(TICK_SOUND, 0.8, 0.6)
+			end
+		else
+			redPulse.BackgroundTransparency = 1
+		end
+	end))
+end
+
+--------------------------------------------------------------------
+-- harvest + small events
+--------------------------------------------------------------------
+local function harvest(data)
+	local s = state
+	if not s then
+		return
+	end
+	local mine = data.userId == player.UserId
+	local who = Players:GetPlayerByUserId(data.userId)
+	local target = who and who.Character and who.Character:FindFirstChild("HumanoidRootPart")
+
+	local burst = ghost(CFrame.new(data.pos), Vector3.new(6, 2, 6))
+	emitter(burst, {
+		Texture = TEX_SPARK,
+		Color = ColorSequence.new(C3(120, 255, 160), C3(200, 255, 255)),
+		LightEmission = 1,
+		Size = ns(0, 1.4, 1, 0),
+		Lifetime = NumberRange.new(0.8, 1.4),
+		Speed = NumberRange.new(10, 26),
+		SpreadAngle = Vector2.new(180, 180),
+		Drag = 2,
+	}):Emit(60)
+	Debris:AddItem(burst, 2)
+	sound("WaterSplash", mine and 0.7 or 0.3, 1.5, burst)
+	sound("Whoosh", mine and 0.6 or 0.25, 1.6, burst)
+
+	-- leaves turn into oxygen and fly into the harvester's tank
+	if target then
+		for i = 1, 8 do
+			local leaf = prop("FxLeaf", 1.2)
+			if leaf then
+				local from = data.pos + Vector3.new(math.random(-4, 4), math.random(-2, 2), math.random(-4, 4))
+				local mid = (from + target.Position) / 2 + Vector3.new(0, 14, 0)
+				task.delay(i * 0.05, function()
+					local t0 = os.clock()
+					while leaf.Parent and target.Parent do
+						local a = math.min((os.clock() - t0) / 0.8, 1)
+						local p = from:Lerp(mid, a):Lerp(mid:Lerp(target.Position, a), a)
+						leaf:PivotTo(CFrame.new(p) * CFrame.Angles(a * 9, a * 6, 0))
+						if a >= 1 then
+							break
+						end
+						RunService.RenderStepped:Wait()
+					end
+					leaf:Destroy()
+				end)
+			end
+		end
+	end
+	if mine then
+		local pop = ghost(CFrame.new(data.pos + Vector3.new(0, 4, 0)))
+		local bb = mk("BillboardGui", { Size = UDim2.fromOffset(160, 50), AlwaysOnTop = true, LightInfluence = 0 }, pop)
+		local l = label(bb, { Size = UDim2.fromScale(1, 1), Text = "+8 s O2", TextColor3 = C3(120, 255, 160) })
+		tween(pop, 1.4, { CFrame = pop.CFrame + Vector3.new(0, 10, 0) })
+		tween(l, 1.4, { TextTransparency = 1 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		Debris:AddItem(pop, 1.5)
+		o2Fill.Size = UDim2.fromScale(1, 1)
+	end
+end
+
+remote.OnClientEvent:Connect(function(kind, data)
+	local ok, err = pcall(function()
+		if kind == "Approach" then
+			approach(data)
+		elseif kind == "DoorsClosing" and state then
+			state.doorsClosing = true
+			topHint.Text = "⚠ BLAST DOORS CLOSING! ⚠"
+			topHint.TextColor3 = C3(255, 70, 50)
+			sound("DrumRoll", 0.8, 1.4)
+		elseif kind == "Impact" then
+			impact(data)
+		elseif kind == "Harvest" then
+			harvest(data)
+		elseif kind == "Full" then
+			o2Hint.Text = "TANK FULL - use some oxygen first!"
+			o2Hint.TextColor3 = C3(255, 120, 90)
+			sound(TICK_SOUND, 0.8, 0.5)
+		elseif kind == "End" then
+			stopAll()
+		end
+	end)
+	if not ok then
+		warn("[MoonFX] " .. tostring(kind) .. ": " .. tostring(err))
+	end
+end)
 ]]></ProtectedString></Properties></Item></Item></roblox>

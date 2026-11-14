@@ -75,6 +75,27 @@ PAL = {
     "foam":       (240, 250, 255, "SmoothPlastic", 0),
     "sharkGrey":  (100, 118, 140, "SmoothPlastic", 0),
     "sharkBelly": (225, 232, 240, "SmoothPlastic", 0),
+    "moonGrey":   (168, 166, 160, "Slate", 0),
+    "moonDark":   (98, 96, 94, "Slate", 0),
+    "concrete":   (150, 152, 148, "Concrete", 0),
+    "concreteDark": (96, 98, 96, "Concrete", 0),
+    "hazard":     (255, 196, 20, "SmoothPlastic", 0),
+    "redGlow":    (255, 40, 30, "Neon", 0),
+    "o2Green":    (60, 200, 110, "Metal", 0),
+    "sunGlow":    (255, 200, 80, "Neon", 0),
+    "sunCore":    (255, 245, 200, "Neon", 0),
+    "mercury":    (150, 140, 130, "Slate", 0),
+    "venus":      (230, 190, 120, "SmoothPlastic", 0),
+    "earthBlue":  (40, 110, 220, "SmoothPlastic", 0),
+    "earthGreen": (70, 170, 80, "Grass", 0),
+    "cloudWhite": (245, 248, 255, "SmoothPlastic", 0.2),
+    "mars":       (200, 90, 50, "Slate", 0),
+    "jupiter1":   (215, 170, 120, "SmoothPlastic", 0),
+    "jupiter2":   (170, 110, 70, "SmoothPlastic", 0),
+    "saturn":     (225, 200, 140, "SmoothPlastic", 0),
+    "ring":       (210, 190, 150, "SmoothPlastic", 0.3),
+    "uranus":     (150, 220, 230, "SmoothPlastic", 0),
+    "neptune":    (60, 90, 220, "SmoothPlastic", 0),
     "tint":       (255, 70, 70, "Neon", 0),   # recoloured per disaster by the Roblox script
     "x":          (255, 0, 255, "SmoothPlastic", 1),   # markers (anchor / front) - invisible in game
 }
@@ -919,10 +940,132 @@ def build_hazards():
     add("foam", "foam", foam)
 
 
+# ------------------------------------------------------------------ Moon Collision (Transcendent disaster)
+def build_moon_collision():
+    rnd = random.Random(42)
+
+    begin("Moon")   # radius 100, centre at the origin (scaled up in game)
+    m = Piece().sphere(100, (0, 0, 0), sub=4)
+    for v in m.bm.verts:
+        v.co *= 1 + 0.02 * math.sin(v.co.x * 0.07) * math.cos(v.co.y * 0.05)
+    add("body", "moonGrey", m)
+    craters, rims = Piece(), Piece()
+    for k in range(34):
+        d = Vector((rnd.uniform(-1, 1), rnd.uniform(-1, 1), rnd.uniform(-1, 1))).normalized()
+        size = rnd.uniform(6, 24)
+        q = d.to_track_quat('Z', 'Y').to_matrix().to_4x4()
+        craters.cyl(size, size * 0.8, 1.5, tuple(d * 99.6), seg=18, rot=q)
+        rims.torus(size, size * 0.14, tuple(d * 100.4), rot=q, seg=20, tube=6)
+    add("craters", "moonDark", craters)
+    add("rims", "moonGrey", rims)
+    cracks = Piece()   # glowing cracks, shown (via fade) once the moon heats up / crashes
+    for k in range(40):
+        d = Vector((rnd.uniform(-1, 1), rnd.uniform(-1, 1), rnd.uniform(-1, 1))).normalized()
+        q = d.to_track_quat('Z', 'Y').to_matrix().to_4x4()
+        cracks.box((rnd.uniform(1.5, 3), rnd.uniform(14, 34), 1.2), tuple(d * 100.2), rot=q @ RZ(rnd.uniform(0, 180)))
+    add("cracks", "lavaGlow", cracks)
+    add("heat", "tint", Piece().sphere(108, (0, 0, 0), sub=3))   # entry-heat shell (faded in game)
+
+    begin("Bunker", front=True)   # 34 x 26 x 12 nuclear bunker, doorway on the front (Blender -Y)
+    W, D, H, T = 34, 26, 12, 2
+    shell = Piece()
+    shell.box((W, D, T), (0, 0, H + T / 2), bevel=0.3)                         # roof
+    shell.box((T, D, H), (-W / 2 + T / 2, 0, H / 2))                          # left wall
+    shell.box((T, D, H), (W / 2 - T / 2, 0, H / 2))                           # right wall
+    # walls meet without overlapping (overlapping boxes in one mesh render black)
+    shell.box((W - 2 * T, T, H), (0, D / 2 - T / 2, H / 2))                   # back wall
+    fw = (W - 10) / 2 - T
+    shell.box((fw, T, H), (-(5 + fw / 2), -D / 2 + T / 2, H / 2))             # front wall, left of door
+    shell.box((fw, T, H), (5 + fw / 2, -D / 2 + T / 2, H / 2))                # front wall, right of door
+    shell.box((10, T, H - 9), (0, -D / 2 + T / 2, 9 + (H - 9) / 2))           # lintel over the 10 x 9 door
+    add("shell", "concrete", shell)
+    add("floor", "concreteDark", Piece().box((W - 2 * T, D - 2 * T, 0.4), (0, 0, 0.2)))
+    mound = Piece()
+    for (x, y, r) in ((-12, 6, 9), (0, 8, 11), (12, 6, 9), (-8, -2, 8), (8, -2, 8)):
+        mound.sphere(r, (x, y, H + 2), scale=(1.2, 1, 0.35), sub=2)
+    add("mound", "grass", mound)
+    stripes = Piece()   # hazard stripes around the door frame
+    for i in range(6):
+        stripes.box((1.6, 0.3, 1.0), (-4.2 + i * 1.7, -D / 2 - 0.1, 9.6), rot=RY(35))
+    for s in (-1, 1):
+        for i in range(5):
+            stripes.box((1.0, 0.3, 1.6), (s * 5.6, -D / 2 - 0.1, 1 + i * 1.8), rot=RY(35))
+    add("stripes", "hazard", stripes)
+    add("stripesBack", "black", Piece().box((12.2, 0.2, 11), (0, -D / 2 - 0.02, 5)))
+    add("door", "metal", Piece().box((10, 1.2, 9), (0, -D / 2 - 0.8, 4.5), bevel=0.15))   # slides up in game
+    wheel = Piece().torus(1.6, 0.25, (0, -D / 2 - 1.5, 4.5), rot=RX(90), seg=20)
+    wheel.box((3.2, 0.3, 0.3), (0, -D / 2 - 1.5, 4.5)).box((0.3, 0.3, 3.2), (0, -D / 2 - 1.5, 4.5))
+    add("doorWheel", "hazard", wheel)
+    sign = Piece().cyl(2.2, 2.2, 0.3, (0, -D / 2 - 0.15, 11.2 + 2.4), seg=24, rot=RX(90))
+    add("sign", "hazard", sign)
+    trefoil = Piece().cyl(0.45, 0.45, 0.35, (0, -D / 2 - 0.3, 13.6), seg=12, rot=RX(90))
+    for i in range(3):
+        a = R(90 + i * 120)
+        pts = [(0.7 * math.cos(a - R(30)), 0.7 * math.sin(a - R(30))), (1.9 * math.cos(a - R(30)), 1.9 * math.sin(a - R(30))),
+               (1.9 * math.cos(a + R(30)), 1.9 * math.sin(a + R(30))), (0.7 * math.cos(a + R(30)), 0.7 * math.sin(a + R(30)))]
+        trefoil.prism([(x, z + 13.6) for x, z in pts], 0.35, (0, -D / 2 - 0.3, 0))
+    add("trefoil", "black", trefoil)
+    lamps = Piece()
+    for x in (-7, 7):
+        lamps.sphere(0.8, (x, -D / 2 - 0.4, 10.6), scale=(1, 1, 0.7), sub=1)
+    add("alarm", "redGlow", lamps, "spin200")
+    inside = Piece()
+    for x in (-10, 0, 10):
+        inside.box((4, 0.6, 0.4), (x, 0, H - 0.3))
+    add("lights", "sunCore", inside)
+    vents = Piece()
+    for x in (-10, 10):
+        vents.cyl(1.0, 1.0, 3.5, (x, 6, H + T), seg=12).cyl(1.5, 1.5, 0.6, (x, 6, H + T + 3.5), seg=12)
+    add("vents", "metal", vents)
+    rack = Piece().box((10, 1.2, 0.4), (0, D / 2 - T - 0.8, 1.6)).box((10, 1.2, 0.4), (0, D / 2 - T - 0.8, 4.4))
+    add("rack", "metal", rack)
+    tanks = Piece()
+    for i in range(5):
+        x = -4 + i * 2
+        tanks.cyl(0.7, 0.7, 4.2, (x, D / 2 - T - 0.8, 0.6), seg=14).sphere(0.7, (x, D / 2 - T - 0.8, 4.8), sub=1)
+    add("tanks", "o2Green", tanks)
+
+    begin("OxygenTank", front=True)   # worn on the back, ~3.4 studs tall, origin at its middle
+    add("body", "o2Green", Piece().cyl(0.55, 0.55, 2.6, (0, 0, -1.3), seg=16).sphere(0.55, (0, 0, 1.3), sub=2).sphere(0.55, (0, 0, -1.3), sub=2))
+    add("band", "white", Piece().cyl(0.58, 0.58, 0.5, (0, 0, -0.1), seg=16))
+    add("valve", "metal", Piece().cyl(0.22, 0.22, 0.6, (0, 0, 1.75), seg=10).box((0.9, 0.18, 0.18), (0, 0, 2.3)))
+    add("gauge", "cyanGlow", Piece().cyl(0.25, 0.25, 0.12, (0, -0.58, 0.6), seg=12, rot=RX(90)))
+
+    # solar system (seen in the airless sky). Radii are "studs before scaling"; the game scales them.
+    begin("Sun")
+    add("core", "sunCore", Piece().sphere(60, (0, 0, 0), sub=3))
+    add("corona", "sunGlow", Piece().sphere(70, (0, 0, 0), sub=3), "spin6")
+    for name, key, r, extra in (("Mercury", "mercury", 6, None), ("Venus", "venus", 11, None), ("Mars", "mars", 8, None),
+                                ("Uranus", "uranus", 20, "ringThin"), ("Neptune", "neptune", 19, None)):
+        begin(name)
+        add("body", key, Piece().sphere(r, (0, 0, 0), sub=3))
+        if extra:
+            add("ring", "ring", Piece().ring(r * 1.5, r * 1.7, 0.2, (0, 0, 0), seg=48, rot=RX(80)))
+    begin("Earth")
+    add("ocean", "earthBlue", Piece().sphere(12, (0, 0, 0), sub=3))
+    land = Piece()
+    for k in range(9):
+        d = Vector((rnd.uniform(-1, 1), rnd.uniform(-1, 1), rnd.uniform(-0.6, 0.6))).normalized()
+        land.sphere(rnd.uniform(3, 5), tuple(d * 10.4), scale=(1, 1, 0.5), sub=2, rot=d.to_track_quat('Z', 'Y').to_matrix().to_4x4())
+    add("land", "earthGreen", land)
+    add("clouds", "cloudWhite", Piece().sphere(12.6, (0, 0, 0), sub=2), "spin8")
+    begin("Jupiter")
+    add("body", "jupiter1", Piece().sphere(40, (0, 0, 0), sub=3))
+    bands = Piece()
+    for z in (-24, -12, 6, 18, 30):
+        rr = math.sqrt(max(40 ** 2 - z ** 2, 1)) + 0.4
+        bands.cyl(rr, rr, 4, (0, 0, z - 2), seg=40)
+    add("bands", "jupiter2", bands)
+    add("spot", "mars", Piece().sphere(5, (0, -38.5, -10), scale=(1.6, 0.4, 1), sub=2))
+    begin("Saturn")
+    add("body", "saturn", Piece().sphere(34, (0, 0, 0), sub=3))
+    add("ring", "ring", Piece().ring(44, 70, 0.6, (0, 0, -0.3), seg=64, rot=RX(20)))
+
+
 BUILDERS = [build_scale_ref, build_hub, build_holo, build_kiosk_shop, build_kiosk_quests, build_kiosk_daily,
             build_kiosk_board, build_sign_frame, build_pillar, build_float_island, build_balloon, build_step,
             build_chest, build_jump_pad, build_coin, build_siren, build_storm_ring, build_shop_items, build_fx,
-            build_hazards]
+            build_hazards, build_moon_collision]
 
 # ------------------------------------------------------------------ build + export
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -965,7 +1108,7 @@ if RENDER:
             yaw = math.degrees(math.atan2(-loc.y, -loc.x)) + 90
         m = T(*loc) @ RZ(yaw) @ S(scale, scale, scale) @ T(*(-PROPS[name]["origin"]))
         for o in PROPS[name]["objs"]:
-            if o.name.endswith("__x"):
+            if o.name.endswith("__x") or o.name == "Moon__heat__tint":   # heat shell is see-through until entry
                 continue
             d = bpy.data.objects.new("pv_" + o.name, o.data)
             d.matrix_world = m
@@ -1023,6 +1166,13 @@ if RENDER:
                        ("LavaBlob", 1878, 8, 1.2), ("LavaPool", 1895, 0.2, 1), ("QuakeSpike", 1912, 0.5, 1.5), ("Shark", 1928, 4, 1.4)):
         place(n, x, y, 0, scale=s, yaw=35)
     place("TsunamiCurl", 2200, 22, 0)
+    place("Bunker", 2700, 0, 0)
+    place("OxygenTank", 2725, 2, -14, scale=2)
+    place("Moon", 2700, 190, 260, scale=1)
+    for n, x, y, s in (("Sun", 2380, 140, 0.9), ("Mercury", 2470, 120, 1), ("Venus", 2500, 120, 1), ("Earth", 2535, 120, 1),
+                       ("Mars", 2565, 120, 1), ("Jupiter", 2900, 150, 0.9), ("Saturn", 2990, 150, 0.9),
+                       ("Uranus", 3060, 130, 1), ("Neptune", 3110, 130, 1)):
+        place(n, x, y, 80, scale=s)
     ground = bpy.data.objects.new("pv_ground", bpy.data.meshes.new("g"))
     gp = Piece().box((230, 230, 6), (600, 0, -3), bevel=1)
     gp.bm.to_mesh(ground.data)
@@ -1056,6 +1206,8 @@ if RENDER:
         ("preview_disaster_fx", (1570, -130, 30), (1570, 0, 8), 26),
         ("preview_hazards", (1862, -190, 50), (1862, 0, 32), 24),
         ("preview_tsunami", (2390, -150, 40), (2230, 0, 22), 26),
+        ("preview_moon_collision", (2740, -620, 160), (2740, -60, 120), 20),
+        ("preview_bunker", (2690, -70, 22), (2705, 0, 6), 26),
     )
     for name, pos, target, lens in shots:
         camera(pos, target, lens)
