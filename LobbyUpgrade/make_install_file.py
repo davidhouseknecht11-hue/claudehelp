@@ -58,7 +58,8 @@ print("wrote LobbyUpgrade.rbxmx", len(xml), "bytes")
 
 # Patched copies of the game's own scripts (replace the originals with Insert from File)
 patched = ""
-for name, cls in (("PetsClient", "LocalScript"), ("DisasterConfig", "ModuleScript"), ("DisasterGameManager", "Script")):
+for name, cls in (("PetsClient", "LocalScript"), ("DisasterConfig", "ModuleScript"), ("DisasterGameManager", "Script"),
+                  ("SwimController", "LocalScript"), ("UnderwaterFX", "LocalScript"), ("DrowningSystem", "Script")):
     src = read("scripts_ready_to_paste", name + ".lua")
     patched += item(cls, name, src, disabled=(cls == "Script"))  # off until moved (see INSTALL_NOTES)
     one = '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + item(cls, name, src) + "</roblox>\n"
