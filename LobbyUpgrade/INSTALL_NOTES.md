@@ -5,7 +5,8 @@
 3. Drag **`LobbyUpgrade.rbxmx`** into `ServerScriptService`. It contains LobbyUpgrade with
    KitLoader, KitAnimator, DisasterFX, ShopUI and ShopItems inside.
 4. One line in **`StarterPlayerScripts > PetsClient`** so the Pets tab shows pets hatched from the new shop.
-   In `setTab`, replace
+   Easiest: replace the whole script with `scripts_ready_to_paste/PetsClient.lua` (already patched).
+   Or by hand: in `setTab`, replace
 
    ```lua
    if name == "Pets" then
