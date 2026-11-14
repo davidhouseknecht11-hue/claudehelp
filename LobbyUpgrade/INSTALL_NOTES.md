@@ -7,7 +7,7 @@
 3. Open **View > Command Bar**, paste this line, press Enter:
 
    ```lua
-   local s=game:GetService("ServerScriptService") local u=s:FindFirstChild("TuffUpdate") or workspace:FindFirstChild("TuffUpdate") local sp=game.StarterPlayer local function put(n,p) local o=p:FindFirstChild(n) if o then o:Destroy() end u[n].Parent=p end put("LobbyUpgrade",s) put("DisasterGameManager",s) put("DrowningSystem",s) put("DisasterConfig",game.ReplicatedStorage.DisasterAssets) put("PetsClient",sp.StarterPlayerScripts) put("UnderwaterFX",sp.StarterPlayerScripts) put("SwimController",sp.StarterCharacterScripts) s.LobbyUpgrade.Enabled=true s.DisasterGameManager.Enabled=true s.DrowningSystem.Enabled=true u:Destroy() print("TuffUpdate installed")
+   local s=game:GetService("ServerScriptService") local u=s:FindFirstChild("TuffUpdate") or workspace:FindFirstChild("TuffUpdate") if not u then return warn("No TuffUpdate folder - insert TuffUpdate_AllScripts.rbxmx first. Nothing was changed.") end local sp=game.StarterPlayer local function put(n,p) local new=u:FindFirstChild(n) if not new then return end local o=p:FindFirstChild(n) if o then o:Destroy() end new.Parent=p end put("LobbyUpgrade",s) put("DisasterGameManager",s) put("DrowningSystem",s) put("DisasterConfig",game.ReplicatedStorage.DisasterAssets) put("PetsClient",sp.StarterPlayerScripts) put("UnderwaterFX",sp.StarterPlayerScripts) put("SwimController",sp.StarterCharacterScripts) s.LobbyUpgrade.Enabled=true s.DisasterGameManager.Enabled=true s.DrowningSystem.Enabled=true u:Destroy() print("TuffUpdate installed")
    ```
 
    It replaces LobbyUpgrade, DisasterGameManager, DrowningSystem, DisasterConfig, PetsClient, UnderwaterFX and
