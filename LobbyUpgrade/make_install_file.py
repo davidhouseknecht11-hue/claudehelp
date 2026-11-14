@@ -18,6 +18,9 @@ sources = {
     "LobbyUpgrade": read("src", "LobbyUpgrade.lua"),
     "KitLoader": read("src", "KitLoader.lua").replace("--@PALETTE@", palette),
     "KitAnimator": read("src", "KitAnimator.lua"),
+    "DisasterFX": read("src", "DisasterFX.lua"),
+    "ShopUI": read("src", "ShopUI.lua"),
+    "ShopItems": read("src", "ShopItems.lua"),
 }
 assert "--@PALETTE@" not in sources["KitLoader"]
 
@@ -32,7 +35,10 @@ def item(cls, name, source, run_context=None, children=""):
 
 
 children = item("ModuleScript", "KitLoader", sources["KitLoader"]) + \
-    item("Script", "KitAnimator", sources["KitAnimator"], run_context=2)   # 2 = Client
+    item("Script", "KitAnimator", sources["KitAnimator"], run_context=2) + \
+    item("Script", "DisasterFX", sources["DisasterFX"], run_context=2) + \
+    item("Script", "ShopUI", sources["ShopUI"], run_context=2) + \
+    item("ModuleScript", "ShopItems", sources["ShopItems"])   # run_context 2 = Client
 xml = '<roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4">' + \
     item("Script", "LobbyUpgrade", sources["LobbyUpgrade"], run_context=0, children=children) + "</roblox>\n"
 

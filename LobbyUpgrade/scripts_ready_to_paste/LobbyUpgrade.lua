@@ -1,11 +1,14 @@
 -- LobbyUpgrade  (Script)
--- Put in: ServerScriptService   (keep its two children: KitLoader and KitAnimator)
+-- Put in: ServerScriptService   (keep its children: KitLoader, KitAnimator, DisasterFX, ShopUI, ShopItems)
 --
 -- An ADD-ON. It does not replace any of your scripts:
 --   * LobbyService still builds the lobby and runs all the lobby rules. This script waits for it,
 --     then dresses the lobby up with the Blender kit and adds new things to do.
 --   * DisasterGameManager still runs every disaster. This script listens to the same
 --     ServerStorage.RoundEvents signal and adds sirens + a storm vortex over the island.
+--   * DisasterFX (each player's screen): red title intro, extreme wind, weather, VFX and new
+--     Blender looks for the hazards. The new tornado funnel goes in ServerStorage > TornadoAssets.
+--   * ShopUI (each player's screen): the new card-style shop; ShopItems lists what it sells.
 -- Delete this script and everything goes back to how it was.
 --
 -- Needs the Blender models: File > Import 3D > LobbyKit.glb (the model can stay in Workspace or
@@ -39,17 +42,62 @@ local GOLD = Color3.fromRGB(255, 205, 70)
 --------------------------------------------------------------------
 -- Shared bits
 --------------------------------------------------------------------
--- the animations run on each player's device
-local animator = script:FindFirstChild("KitAnimator")
-if animator then
-	animator.Parent = ReplicatedStorage
-end
-
 local hasKit = Kit.load()
 if hasKit then
 	print("[LobbyUpgrade] Blender kit loaded")
 else
 	warn("[LobbyUpgrade] LobbyKit not found - import LobbyKit.glb (File > Import 3D). Running without the models.")
+end
+
+-- Blender props the client scripts clone: shop icons, disaster effect pieces, new hazard looks
+local CLIENT_PROPS = {
+	"EggCommon", "EggRare", "EggMythic", "CoinsS", "CoinsM", "CoinsL", "CoinsXL",
+	"Shield", "ReviveHeart", "Clover", "CoinX2", "Crown", "GiftBox", "TrailSwirl",
+	"FxPlank", "FxRock", "FxMeteorChunk", "FxLeaf", "FxIceShard", "FxBolt", "FxShockRing", "FxWindStreak", "FxDroplet", "FxCloudPuff",
+	"MeteorRock", "IceCrystal", "AcidBlob", "LavaBlob", "LavaPool", "QuakeSpike", "Shark", "TsunamiCurl",
+}
+local propsFolder = ReplicatedStorage:FindFirstChild("LobbyKitProps")
+if not propsFolder then
+	propsFolder = Instance.new("Folder")
+	propsFolder.Name = "LobbyKitProps"
+	propsFolder.Parent = ReplicatedStorage
+end
+if hasKit then
+	Kit.publish(CLIENT_PROPS, propsFolder)
+	-- New tornado funnel: TornadoDisaster already uses ServerStorage > TornadoAssets > Tornado when it exists
+	-- (pieces named layer* spin). A tornado model you put there yourself is kept.
+	local tornadoAssets = ServerStorage:FindFirstChild("TornadoAssets")
+	if not tornadoAssets then
+		tornadoAssets = Instance.new("Folder")
+		tornadoAssets.Name = "TornadoAssets"
+		tornadoAssets.Parent = ServerStorage
+	end
+	if not tornadoAssets:FindFirstChild("Tornado") then
+		Kit.spawn("Tornado", CFrame.new(), { parent = tornadoAssets, shadows = false })
+	end
+end
+
+-- client scripts + the shop list run on each player's device
+for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems" }) do
+	local child = script:FindFirstChild(name)
+	if child then
+		child.Parent = ReplicatedStorage
+	end
+end
+
+-- new Robux coin packs: added to ProgressionConfig.Products so ProgressionServer's existing
+-- purchase code (ProcessReceipt, Kind = "Coins") pays them out
+do
+	local itemsModule = ReplicatedStorage:FindFirstChild("ShopItems")
+	local configModule = ReplicatedStorage:FindFirstChild("ProgressionConfig")
+	if itemsModule and configModule then
+		local ok, err = pcall(function()
+			require(itemsModule).AddProducts(require(configModule))
+		end)
+		if not ok then
+			warn("[LobbyUpgrade] Could not add the new shop products: " .. tostring(err))
+		end
+	end
 end
 
 local function findOrCreateBindable(name)

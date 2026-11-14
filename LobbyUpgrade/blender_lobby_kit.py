@@ -57,6 +57,24 @@ PAL = {
     "goldGlow":   (255, 214, 90, "Neon", 0),
     "greenGlow":  (90, 255, 140, "Neon", 0),
     "orangeGlow": (255, 140, 40, "Neon", 0),
+    "cream":      (240, 232, 208, "SmoothPlastic", 0),
+    "spot":       (176, 140, 96, "SmoothPlastic", 0),
+    "pink":       (255, 120, 190, "SmoothPlastic", 0),
+    "ice":        (170, 225, 255, "Ice", 0.15),
+    "water":      (80, 170, 255, "Glass", 0.3),
+    "windWhite":  (255, 255, 255, "SmoothPlastic", 0.45),
+    "dust":       (176, 150, 118, "SmoothPlastic", 0.3),
+    "violet":     (130, 105, 175, "SmoothPlastic", 0.3),
+    "indigo":     (62, 52, 118, "SmoothPlastic", 0.25),
+    "coreGlow":   (255, 236, 205, "Neon", 0.55),
+    "fireTrail":  (255, 120, 30, "Neon", 0.35),
+    "acidGlow":   (140, 255, 60, "Neon", 0),
+    "lavaGlow":   (255, 110, 20, "Neon", 0),
+    "waveDeep":   (10, 80, 160, "Glass", 0.15),
+    "waveLight":  (110, 225, 255, "Glass", 0.25),
+    "foam":       (240, 250, 255, "SmoothPlastic", 0),
+    "sharkGrey":  (100, 118, 140, "SmoothPlastic", 0),
+    "sharkBelly": (225, 232, 240, "SmoothPlastic", 0),
     "tint":       (255, 70, 70, "Neon", 0),   # recoloured per disaster by the Roblox script
     "x":          (255, 0, 255, "SmoothPlastic", 1),   # markers (anchor / front) - invisible in game
 }
@@ -73,6 +91,11 @@ def S(x, y, z): return Matrix.Diagonal((x, y, z, 1))
 
 
 # ------------------------------------------------------------------ mesh building
+def egg_radius(r, u):
+    """Egg width at height u (-1 bottom .. 1 top): round, a bit wider low down."""
+    return r * math.sqrt(max(0.0, 1 - u * u)) * (1 - 0.14 * u)
+
+
 class Piece:
     def __init__(self):
         self.bm = bmesh.new()
@@ -111,6 +134,31 @@ class Piece:
                 k = (j + 1) % n
                 self.bm.faces.new((a[j], b[j], b[k], a[k]))
         return self
+
+    def prism(self, outline, depth, loc, rot=None):
+        """Extrude a convex-ish 2D outline [(x, z), ...] (seen from the front) along Y, centred on loc."""
+        m = T(*loc) @ (rot or I4)
+        front = [self.bm.verts.new(m @ Vector((x, -depth / 2, z))) for x, z in outline]
+        back = [self.bm.verts.new(m @ Vector((x, depth / 2, z))) for x, z in outline]
+        n = len(outline)
+        mx, mz = sum(p[0] for p in outline) / n, sum(p[1] for p in outline) / n
+        cf = self.bm.verts.new(m @ Vector((mx, -depth / 2, mz)))
+        cb = self.bm.verts.new(m @ Vector((mx, depth / 2, mz)))
+        for i in range(n):
+            k = (i + 1) % n
+            self.bm.faces.new((front[i], front[k], back[k], back[i]))
+            self.bm.faces.new((front[k], front[i], cf))
+            self.bm.faces.new((back[i], back[k], cb))
+        return self
+
+    def egg(self, r, h, loc, seg=32, rings=14):
+        """Egg standing on loc: radius r, height h, slightly pointier at the top."""
+        prof = [(0.001, 0.0)]
+        for i in range(1, rings):
+            u = -1 + 2 * i / rings   # -1 bottom .. 1 top
+            prof.append((max(egg_radius(r, u), 0.001), h * (u + 1) / 2))
+        prof.append((0.001, h))
+        return self.lathe(prof, loc, seg)
 
     def torus(self, R_, r_, loc, rot=None, seg=32, tube=8):
         prof = [(R_ + r_ * math.cos(2 * math.pi * t / tube), r_ * math.sin(2 * math.pi * t / tube)) for t in range(tube)]
@@ -532,9 +580,349 @@ def build_storm_ring():
     add("eyeGlow", "tint", Piece().ring(52, 55, 0.6, (0, 0, -3), seg=56), "spin-20")
 
 
+# ------------------------------------------------------------------ shop items (shown in the shop's 3D icons)
+# Each one stands on its origin, about 5 studs tall, front facing Blender -Y.
+def heart_outline(size, n=28):
+    pts = []
+    for i in range(n):
+        t = 2 * math.pi * i / n
+        x = 16 * math.sin(t) ** 3
+        z = 13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t)
+        pts.append((x * size / 32, z * size / 32))
+    return pts
+
+
+def build_egg(name, body, spots, band, gem):
+    begin(name, front=True)
+    add("shell", body, Piece().egg(2.2, 5.4, (0, 0, 0)))
+    if spots:
+        s = Piece()
+        for (a, z, r) in ((20, 1.4, 0.55), (110, 2.6, 0.45), (200, 1.9, 0.6), (290, 3.3, 0.4), (60, 3.9, 0.35), (250, 0.9, 0.4)):
+            rr = egg_radius(2.2, z / 2.7 - 1) * 0.94
+            s.sphere(r, (math.cos(R(a)) * rr, math.sin(R(a)) * rr, z), scale=(0.6, 1, 0.8), sub=1, rot=RZ(a))
+        add("spots", spots, s)
+    if band:
+        add("band", band, Piece().torus(egg_radius(2.2, 2.3 / 2.7 - 1) + 0.1, 0.26, (0, 0, 2.3), seg=36))
+    if gem:
+        g = Piece().cyl(0, 0.55, 0.45, (0, -2.6, 2.3), seg=4, rot=RX(90)).cyl(0.55, 0, 0.3, (0, -2.15, 2.3), seg=4, rot=RX(90))
+        add("gem", gem, g, "bob0.1")
+
+
+def build_eggs():
+    build_egg("EggCommon", "cream", "spot", None, None)
+    build_egg("EggRare", "blue", "white", "tileLight", "cyanGlow")
+    build_egg("EggMythic", "purple", None, "gold", "cyanGlow")
+    cracks = Piece()   # glowing cracks for the mythic egg
+    for (a, z, rot) in ((30, 1.4, 25), (150, 3.4, -30), (260, 1.9, 60), (330, 3.9, -10)):
+        rr = egg_radius(2.2, z / 2.7 - 1)
+        cracks.box((0.16, 0.12, 1.4), (math.cos(R(a)) * rr, math.sin(R(a)) * rr, z), rot=RZ(a) @ RX(rot))
+    add("cracks", "cyanGlow", cracks)
+
+
+def build_coin_pile(name, count, spread, gems):
+    begin(name, front=True)
+    c = Piece()
+    rnd = random.Random(count)
+    for i in range(count):
+        a = rnd.uniform(0, 2 * math.pi)
+        d = rnd.uniform(0, spread) * (1 - i / (count * 1.3))
+        z = i / count * spread * 0.9
+        c.cyl(0.75, 0.75, 0.22, (math.cos(a) * d, math.sin(a) * d, z), seg=16, rot=RX(rnd.uniform(-25, 25)) @ RY(rnd.uniform(-25, 25)))
+    add("coins", "gold", c)
+    add("star", "goldGlow", Piece().star(0.7, 0.3, 0.3, (0, 0, spread * 0.95 + 0.4), rot=RX(90)), "spin60")
+    if gems:
+        g = Piece()
+        for i in range(gems):
+            a = R(i * 360 / gems + 15)
+            g.cyl(0, 0.45, 0.5, (math.cos(a) * spread * 0.8, math.sin(a) * spread * 0.8, 0.3), seg=6)
+            g.cyl(0.45, 0, 0.35, (math.cos(a) * spread * 0.8, math.sin(a) * spread * 0.8, 0.8), seg=6)
+        add("gems", "pinkGlow", g)
+
+
+def build_shop_items():
+    build_eggs()
+    build_coin_pile("CoinsS", 7, 1.2, 0)
+    build_coin_pile("CoinsM", 16, 1.8, 0)
+    build_coin_pile("CoinsL", 30, 2.4, 3)
+    build_coin_pile("CoinsXL", 46, 3.0, 6)
+
+    begin("Shield", front=True)   # Streak Saver
+    out = [(-2.0, 2.2), (2.0, 2.2), (2.1, 0.6), (1.6, -0.9), (0, -2.4), (-1.6, -0.9), (-2.1, 0.6)]
+    add("body", "blue", Piece().prism([(x, z + 2.6) for x, z in out], 0.7, (0, 0, 0)))
+    add("rim", "gold", Piece().prism([(x * 1.12, z * 1.1 + 2.6) for x, z in out], 0.5, (0, 0.2, 0)))
+    flame = Piece().cyl(0, 0.75, 1.8, (0, -0.45, 2.1), seg=8).sphere(0.75, (0, -0.45, 2.1), scale=(1, 0.5, 0.8), sub=1)
+    add("flame", "orangeGlow", flame, "bob0.15")
+
+    begin("ReviveHeart", front=True)   # Revive
+    add("heart", "green", Piece().prism([(x, z + 2.6) for x, z in heart_outline(4.6)], 1.2, (0, 0, 0)), "bob0.2")
+    a, b = 0.8, 0.26   # plus sign as one outline (two overlapping boxes render a black hole)
+    cross = [(b, a), (-b, a), (-b, b), (-a, b), (-a, -b), (-b, -b), (-b, -a), (b, -a), (b, -b), (a, -b), (a, b), (b, b)]
+    add("plus", "white", Piece().prism([(x, z + 2.7) for x, z in cross], 0.4, (0, -0.7, 0)), "bob0.2")
+
+    begin("Clover", front=True)   # Server Luck
+    leaves = Piece()
+    for i in range(4):
+        # heart tip sits on the stem top (z = 3), then each leaf is turned around that point
+        leaves.prism([(x, z + 4.3) for x, z in heart_outline(2.4)], 0.35, (0, 0, 0), rot=T(0, 0, 3) @ RY(i * 90 + 45) @ T(0, 0, -3))
+    add("leaves", "green", leaves, "spin30")
+    add("stem", "leaf", Piece().cyl(0.18, 0.12, 3.0, (0, 0, 0), seg=8))
+    add("center", "goldGlow", Piece().sphere(0.45, (0, -0.25, 3.0), sub=1), "spin30")
+
+    begin("CoinX2", front=True)   # 2x Coins pass
+    for i, (x, z) in enumerate(((-0.9, 2.2), (0.9, 2.9))):
+        c = Piece().cyl(1.7, 1.7, 0.45, (x, 0.22 - i * 0.6, z), seg=28, rot=RX(90)).torus(1.7, 0.22, (x, -i * 0.6, z), rot=RX(90), seg=28)
+        add("coin%d" % i, "gold", c)
+        add("star%d" % i, "goldGlow", Piece().star(1.05, 0.45, 0.6, (x, 0.3 - i * 0.6, z), rot=RX(90)))
+
+    begin("Crown", front=True)   # VIP pass
+    add("band", "gold", Piece().ring(1.9, 2.25, 1.3, (0, 0, 0.6), seg=32))
+    spikes = Piece()
+    for i in range(6):
+        a = R(i * 60)
+        spikes.cyl(0.55, 0, 1.6, (math.cos(a) * 2.07, math.sin(a) * 2.07, 1.9), seg=8)
+    add("spikes", "gold", spikes)
+    tips = Piece()
+    for i in range(6):
+        a = R(i * 60)
+        tips.sphere(0.28, (math.cos(a) * 2.07, math.sin(a) * 2.07, 3.55), sub=1)
+    add("tips", "goldGlow", tips)
+    gems = Piece()
+    for i in range(6):
+        a = R(i * 60 + 30)
+        gems.sphere(0.32, (math.cos(a) * 2.27, math.sin(a) * 2.27, 1.25), scale=(1, 1, 1.2), sub=1)
+    add("gems", "pinkGlow", gems)
+    add("cushion", "red", Piece().sphere(1.9, (0, 0, 0.9), scale=(1, 1, 0.6), sub=2))
+
+    begin("GiftBox", front=True)   # Free item / daily reward
+    add("box", "pink", Piece().box((3.6, 3.6, 2.8), (0, 0, 1.4), bevel=0.15))
+    add("lid", "pink", Piece().box((4.0, 4.0, 0.8), (0, 0, 3.2), bevel=0.15), "bob0.15")
+    rib = Piece().box((3.7, 0.7, 2.85), (0, 0, 1.42)).box((0.7, 3.7, 2.85), (0, 0, 1.42))
+    add("ribbon", "gold", rib)
+    bow = Piece().box((4.1, 0.75, 0.85), (0, 0, 3.2)).box((0.75, 4.1, 0.85), (0, 0, 3.2))
+    bow.torus(0.65, 0.22, (-0.65, 0, 4.0), rot=RY(-35) @ RX(90), seg=14).torus(0.65, 0.22, (0.65, 0, 4.0), rot=RY(35) @ RX(90), seg=14)
+    add("bow", "gold", bow, "bob0.15")
+
+    begin("TrailSwirl", front=True)   # trail icon, recoloured per trail
+    sw = Piece()
+    for i in range(22):
+        t = i / 21
+        a = t * 4 * math.pi
+        sw.sphere(0.25 + 0.35 * t, (math.cos(a) * (1.6 - t), math.sin(a) * (1.6 - t), 0.3 + t * 4.2), sub=1)
+    add("swirl", "tint", sw, "spin-90")
+    add("sparkle", "goldGlow", Piece().star(0.6, 0.25, 0.25, (0, 0, 5.0), rot=RX(90)), "spin120")
+
+
+# ------------------------------------------------------------------ disaster effect pieces (cloned on each player's screen)
+def build_fx():
+    begin("FxPlank")
+    add("wood", "woodDark", Piece().box((5, 1, 0.35), (0, 0, 0), rot=RZ(8), bevel=0.05))
+    add("nails", "metal", Piece().box((0.18, 0.18, 0.5), (1.8, 0, 0.1)).box((0.18, 0.18, 0.5), (-1.8, 0.1, 0.1)))
+
+    begin("FxRock")
+    r = Piece().sphere(1, (0, 0, 0), sub=1)
+    for v in r.bm.verts:
+        v.co *= random.uniform(0.7, 1.25)
+    add("rock", "rock", r)
+
+    begin("FxMeteorChunk")
+    m = Piece().sphere(1.2, (0, 0, 0), sub=1)
+    for v in m.bm.verts:
+        v.co *= random.uniform(0.75, 1.2)
+    add("rock", "rockDark", m)
+    add("glow", "orangeGlow", Piece().sphere(0.95, (0, 0, 0), sub=1))
+
+    begin("FxLeaf")
+    add("leaf", "leaf", Piece().sphere(1.1, (0, 0, 0), scale=(1, 0.55, 0.1), sub=2))
+
+    begin("FxIceShard")
+    add("shard", "ice", Piece().cyl(0.55, 0, 3.2, (0, 0, -1.2), seg=5).cyl(0, 0.55, 0.6, (0, 0, -1.8), seg=5))
+
+    begin("FxBolt")   # zig-zag bolt, 40 studs, top at origin
+    b = Piece()
+    x = 0.0
+    for i in range(8):
+        nx = random.uniform(-3, 3)
+        ln = math.hypot(nx - x, 5)
+        b.box((0.7, 0.7, ln + 0.6), ((x + nx) / 2, 0, -i * 5 - 2.5), rot=RY(math.degrees(math.atan2(-(nx - x), 5))))
+        x = nx
+    add("bolt", "tint", b)
+
+    begin("FxShockRing")
+    add("ring", "tint", Piece().torus(10, 0.9, (0, 0, 0), seg=40, tube=6))
+
+    begin("FxWindStreak")   # long curved ribbon blown along +X (Roblox +X)
+    w = Piece()
+    for i in range(10):
+        t = i / 9
+        w.box((1.3, 0.05, 0.16 + 0.12 * math.sin(math.pi * t)), (i * 1.2 - 5.4, math.sin(t * 2.4) * 0.8, math.sin(t * 3.1) * 0.5), rot=RZ(math.degrees(math.cos(t * 2.4) * 0.6)))
+    add("streak", "windWhite", w)
+
+    begin("FxDroplet")
+    add("drop", "water", Piece().sphere(0.4, (0, 0, 0), scale=(1, 1, 1.5), sub=1).cyl(0.3, 0, 0.6, (0, 0, 0.35), seg=8))
+
+    begin("FxCloudPuff")
+    cp = Piece()
+    for (x, y, z, r_) in ((0, 0, 0, 3), (2.6, 0.5, -0.4, 2.3), (-2.4, -0.4, -0.5, 2.2), (0.6, 1.4, 1.2, 2.0)):
+        cp.sphere(r_, (x, y, z), scale=(1, 1, 0.7), sub=2)
+    add("puff", "cloudStorm", cp)
+
+
+# ------------------------------------------------------------------ disaster hazards (replace the old block looks)
+def lumpy(p, r, loc, rnd, sub=1, flat=1.0):
+    p.sphere(r, loc, scale=(1, 1, flat), sub=sub, rot=RZ(rnd.uniform(0, 360)))
+
+
+def build_tornado():
+    """Funnel for TornadoDisaster's Blender slot. Origin = ground point, 80 studs tall.
+    Pieces named layer* spin around the axis in game; the rest stays rigid."""
+    begin("Tornado")
+    rnd = random.Random(5)
+    keys = ("dust", "dust", "violet", "violet", "violet", "indigo", "indigo", "indigo")
+    for i, key in enumerate(keys):
+        p = Piece()
+        f0, f1 = i / len(keys), (i + 1) / len(keys)
+        for k in range(18):
+            f = rnd.uniform(f0, f1)
+            rad = 3.2 + 21 * f ** 1.7
+            a = R(k * 20 + i * 37)
+            lumpy(p, rad * 0.32 + 1.6, (math.cos(a) * rad * 0.85, math.sin(a) * rad * 0.85, 2 + f * 76), rnd, flat=0.55)
+        add("layer%d" % (i + 1), key, p)
+    streaks = Piece()   # spiral wind bands that wrap the funnel
+    for s in range(3):
+        for k in range(26):
+            f = k / 25
+            rad = 3.2 + 21 * f ** 1.7 + 1.4
+            a = R(s * 120 + k * 32)
+            streaks.box((rad * 0.45, 0.5, 0.9), (math.cos(a) * rad, math.sin(a) * rad, 2 + f * 76), rot=RZ(math.degrees(a) + 90) @ RX(-12))
+    add("layerStreaks", "windWhite", streaks)
+    add("core", "coreGlow", Piece().cyl(1.6, 9, 74, (0, 0, 2), seg=16))
+    deb = Piece()
+    for k in range(16):
+        f = rnd.uniform(0.08, 0.9)
+        rad = 3.2 + 21 * f ** 1.7 + rnd.uniform(5, 11)
+        a = R(rnd.uniform(0, 360))
+        x, y, z = math.cos(a) * rad, math.sin(a) * rad, f * 80
+        if k % 3 == 0:
+            deb.box((5, 1, 0.4), (x, y, z), rot=RZ(rnd.uniform(0, 180)) @ RX(rnd.uniform(-40, 40)))
+        else:
+            lumpy(deb, rnd.uniform(0.8, 1.8), (x, y, z), rnd)
+    add("layerDebris", "woodDark", deb)
+    cap = Piece()
+    for k in range(14):
+        a = R(k * 360 / 14)
+        rr = rnd.uniform(14, 40)
+        lumpy(cap, rnd.uniform(10, 16), (math.cos(a) * rr, math.sin(a) * rr, 84 + rnd.uniform(-2, 3)), rnd, flat=0.45)
+    add("layerCap", "indigo", cap)
+    add("skirt", "dust", Piece().cyl(13, 5, 6, (0, 0, 0), seg=14))
+
+
+def build_hazards():
+    rnd = random.Random(9)
+    build_tornado()
+
+    begin("MeteorRock")   # 8 studs, tail points up (the meteor falls down)
+    m = Piece().sphere(4, (0, 0, 0), sub=3)
+    for v in m.bm.verts:
+        v.co *= rnd.uniform(0.86, 1.1)
+    add("rock", "rockDark", m)
+    veins = Piece()
+    for k in range(7):
+        a, b = R(rnd.uniform(0, 360)), R(rnd.uniform(-60, 60))
+        veins.box((0.6, 0.6, 3.2), (math.cos(a) * math.cos(b) * 3.7, math.sin(a) * math.cos(b) * 3.7, math.sin(b) * 3.7), rot=RZ(math.degrees(a)) @ RY(rnd.uniform(0, 180)))
+    add("veins", "lavaGlow", veins)
+    add("tail", "fireTrail", Piece().cyl(4.2, 0, 16, (0, 0, 0.5), seg=12))
+    add("tailCore", "goldGlow", Piece().cyl(2.4, 0, 9, (0, 0, 1), seg=10))
+
+    begin("IceCrystal")   # replaces the 4-stud ice ball
+    ic = Piece()
+    for k in range(6):
+        a, tilt = k * 60 + 20, 35 + (k % 2) * 25
+        ic.cyl(0.75, 0, 3.4, (0, 0, 0), seg=5, rot=RZ(a) @ RY(tilt))
+    ic.cyl(0.9, 0, 3.8, (0, 0, 0), seg=5).cyl(0.9, 0, 2.6, (0, 0, 0), seg=5, rot=RX(180))
+    add("spikes", "ice", ic)
+    add("core", "cyanGlow", Piece().sphere(0.95, (0, 0, 0), sub=1))
+
+    begin("AcidBlob")   # replaces the 2.5-stud acid ball, drip points up
+    add("drop", "acidGlow", Piece().sphere(1.25, (0, 0, 0), sub=2).cyl(1.0, 0, 2.2, (0, 0, 0.5), seg=12))
+    bub = Piece()
+    for k in range(5):
+        a = R(k * 72)
+        bub.sphere(0.32, (math.cos(a) * 1.3, math.sin(a) * 1.3, rnd.uniform(-0.6, 0.8)), sub=1)
+    add("bubbles", "greenGlow", bub)
+
+    begin("LavaBlob")   # replaces each 5-stud geyser cube
+    add("core", "lavaGlow", Piece().sphere(2.3, (0, 0, 0), sub=2))
+    crust = Piece()
+    for k in range(6):
+        a, b = R(k * 60 + rnd.uniform(-15, 15)), R(rnd.uniform(-50, 50))
+        crust.sphere(rnd.uniform(0.9, 1.3), (math.cos(a) * math.cos(b) * 2.2, math.sin(a) * math.cos(b) * 2.2, math.sin(b) * 2.2), scale=(1, 1, 0.5), sub=1, rot=RY(math.degrees(b)))
+    add("crust", "rockDark", crust)
+
+    begin("LavaPool")   # 18 x 18 burning pool, top at z = 0.2
+    add("lava", "lavaGlow", Piece().cyl(8.6, 9, 0.3, (0, 0, -0.1), seg=11))
+    rim = Piece()
+    for k in range(12):
+        a = R(k * 30 + rnd.uniform(-8, 8))
+        rim.sphere(rnd.uniform(1.0, 1.8), (math.cos(a) * 9, math.sin(a) * 9, 0.1), scale=(1, 1, 0.45), sub=1)
+    for k in range(5):
+        a, rr = R(rnd.uniform(0, 360)), rnd.uniform(2, 6)
+        rim.sphere(rnd.uniform(0.6, 1.1), (math.cos(a) * rr, math.sin(a) * rr, 0.15), scale=(1, 1, 0.3), sub=1)
+    add("crust", "rockDark", rim)
+
+    begin("QuakeSpike")   # rock spike that rides the earthquake shock ring
+    sp = Piece().cyl(1.6, 0, 4.5, (0, 0, -0.5), seg=5).cyl(1.0, 0, 2.8, (1.3, 0.4, -0.5), seg=5, rot=RY(-20))
+    sp.cyl(0.9, 0, 2.2, (-1.1, -0.5, -0.5), seg=5, rot=RY(25))
+    add("rock", "rock", sp)
+    add("dirt", "spot", Piece().sphere(2.2, (0, 0, -0.3), scale=(1, 1, 0.3), sub=1))
+
+    begin("Shark")   # 10 studs long, nose toward Blender +Y (= Roblox look direction)
+    add("body", "sharkGrey", Piece().sphere(1.5, (0, 0, 0), scale=(1, 3.4, 0.95), sub=2))
+    add("belly", "sharkBelly", Piece().sphere(1.35, (0, 0.4, -0.35), scale=(0.95, 3.0, 0.7), sub=2))
+    fins = Piece().prism([(-1.0, 0), (1.4, 0), (-0.6, 3.2)], 0.35, (0, 0, 1.1), rot=RZ(90))
+    # outline x runs along the body (RZ(90) turns it onto Blender Y); tail = crescent at the back
+    fins.prism([(0, 0), (-2.2, 2.6), (-1.4, 0), (-2.2, -2.0)], 0.3, (0, -4.4, 0), rot=RZ(90))
+    fins.box((2.4, 1.3, 0.22), (1.7, 0.9, -0.6), rot=RY(25))
+    fins.box((2.4, 1.3, 0.22), (-1.7, 0.9, -0.6), rot=RY(-25))
+    add("fins", "sharkGrey", fins)
+    eyes = Piece().sphere(0.22, (0.8, 3.3, 0.35), sub=1).sphere(0.22, (-0.8, 3.3, 0.35), sub=1)
+    add("eyes", "black", eyes)
+    teeth = Piece()
+    for k in range(7):
+        a = R(-60 + k * 20)
+        teeth.cyl(0.14, 0, 0.35, (math.sin(a) * 0.9, 4.15 + math.cos(a) * 0.4 - 0.4, -0.45), seg=4, rot=RX(180))
+    add("teeth", "white", teeth)
+
+    begin("TsunamiCurl")   # 250 long (X), fills the 40 x 88 hit-box; crest curls toward Blender +Y (travel)
+    # side profile (y = travel, z = up): long back slope, hollow front face, lip curling over it
+    body = [(-44, -22), (44, -22), (36, -14), (28, -4), (22, 8), (18, 18), (10, 24), (-6, 20), (-26, 6), (-44, -8)]
+    add("body", "waveDeep", Piece().prism(body, 250, (0, 0, 0), rot=RZ(90)))
+
+    def slabs(p, pts, thick, push=0.0):
+        for (y0, z0), (y1, z1) in zip(pts, pts[1:]):
+            p.box((250, thick, math.hypot(y1 - y0, z1 - z0) + 1), (0, (y0 + y1) / 2 + push, (z0 + z1) / 2),
+                  rot=RX(-math.degrees(math.atan2(y1 - y0, z1 - z0))))
+
+    face = Piece()
+    slabs(face, [(44, -22), (36, -14), (28, -4), (22, 8), (18, 18)], 1.5, 0.8)
+    add("face", "waveLight", face)
+    arc = [(22 + math.cos(R(a)) * 13, 12 + math.sin(R(a)) * 13) for a in range(110, -45, -19)]
+    curl = Piece()
+    slabs(curl, arc, 4.5)
+    add("curl", "waveDeep", curl)
+    foam = Piece()
+    for k in range(42):
+        x = -125 + k * 6.1
+        for (y, z) in arc[:4]:
+            foam.sphere(rnd.uniform(1.8, 3.2), (x + rnd.uniform(-2, 2), y + rnd.uniform(-1, 1), z + 2.2), scale=(1.4, 1, 0.8), sub=1)
+        ty, tz = arc[-1]
+        foam.sphere(rnd.uniform(1.5, 2.6), (x + 3, ty + rnd.uniform(0, 3), tz + rnd.uniform(-3, 1)), sub=1)
+    add("foam", "foam", foam)
+
+
 BUILDERS = [build_scale_ref, build_hub, build_holo, build_kiosk_shop, build_kiosk_quests, build_kiosk_daily,
             build_kiosk_board, build_sign_frame, build_pillar, build_float_island, build_balloon, build_step,
-            build_chest, build_jump_pad, build_coin, build_siren, build_storm_ring]
+            build_chest, build_jump_pad, build_coin, build_siren, build_storm_ring, build_shop_items, build_fx,
+            build_hazards]
 
 # ------------------------------------------------------------------ build + export
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -622,6 +1010,19 @@ if RENDER:
     place("StormRing", 600, 150, 0, scale=1.6)
     for (dx, dz) in ((-45, -30), (40, -40), (-35, 45), (50, 35)):
         place("Siren", 600 + dx, 0, dz, scale=1.5)
+    # shop items in two rows, effect pieces in a third (Roblox coords, far from the lobby)
+    for i, n in enumerate(("EggCommon", "EggRare", "EggMythic", "CoinsS", "CoinsM", "CoinsL", "CoinsXL")):
+        place(n, 1200 + i * 7, 0, 0, yaw=0)
+    for i, n in enumerate(("Shield", "ReviveHeart", "Clover", "CoinX2", "Crown", "GiftBox", "TrailSwirl")):
+        place(n, 1200 + i * 7, 7.5, 0, yaw=0)
+    for i, n in enumerate(("FxPlank", "FxRock", "FxMeteorChunk", "FxLeaf", "FxIceShard", "FxShockRing", "FxWindStreak", "FxDroplet", "FxCloudPuff")):
+        place(n, 1500 + i * 14, 6, 0, scale=0.9 if n == "FxShockRing" else 1.6, yaw=20)
+    place("FxBolt", 1630, 46, 0)
+    place("Tornado", 1800, 0, 0)
+    for n, x, y, s in (("MeteorRock", 1845, 22, 1), ("IceCrystal", 1858, 8, 1.6), ("AcidBlob", 1868, 8, 1.6),
+                       ("LavaBlob", 1878, 8, 1.2), ("LavaPool", 1895, 0.2, 1), ("QuakeSpike", 1912, 0.5, 1.5), ("Shark", 1928, 4, 1.4)):
+        place(n, x, y, 0, scale=s, yaw=35)
+    place("TsunamiCurl", 2200, 22, 0)
     ground = bpy.data.objects.new("pv_ground", bpy.data.meshes.new("g"))
     gp = Piece().box((230, 230, 6), (600, 0, -3), bevel=1)
     gp.bm.to_mesh(ground.data)
@@ -651,6 +1052,10 @@ if RENDER:
         ("preview_lobby_kiosks", (0, 22, 16), (0, -52, 7), 22),
         ("preview_lobby_parkour", (-30, -18, 26), (30, 30, 16), 22),
         ("preview_disaster", (600 + 150, -170, 60), (600, 0, 70), 22),
+        ("preview_shop_items", (1221, -62, 9), (1221, 0, 6), 30),
+        ("preview_disaster_fx", (1570, -130, 30), (1570, 0, 8), 26),
+        ("preview_hazards", (1862, -190, 50), (1862, 0, 32), 24),
+        ("preview_tsunami", (2390, -150, 40), (2230, 0, 22), 26),
     )
     for name, pos, target, lens in shots:
         camera(pos, target, lens)

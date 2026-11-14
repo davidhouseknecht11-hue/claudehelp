@@ -258,6 +258,17 @@ function Kit.fade(model, visible, seconds)
 	end
 end
 
+-- Copies the named props into `folder` (in ReplicatedStorage) so client scripts (shop icons,
+-- disaster effects) can clone them. They are untagged, so KitAnimator leaves the templates alone.
+function Kit.publish(names, folder)
+	for _, name in ipairs(names) do
+		local model = Kit.spawn(name, CFrame.new(), { parent = folder, shadows = false })
+		if model then
+			CollectionService:RemoveTag(model, "KitModel")
+		end
+	end
+end
+
 function Kit.setTransparency(model, value)
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") and d.Name ~= "KitRoot" then

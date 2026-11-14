@@ -1,11 +1,14 @@
 <roblox xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="4"><Item class="Script" referent="RBX_LobbyUpgrade"><Properties><string name="Name">LobbyUpgrade</string><bool name="Disabled">false</bool><token name="RunContext">0</token><ProtectedString name="Source"><![CDATA[-- LobbyUpgrade  (Script)
--- Put in: ServerScriptService   (keep its two children: KitLoader and KitAnimator)
+-- Put in: ServerScriptService   (keep its children: KitLoader, KitAnimator, DisasterFX, ShopUI, ShopItems)
 --
 -- An ADD-ON. It does not replace any of your scripts:
 --   * LobbyService still builds the lobby and runs all the lobby rules. This script waits for it,
 --     then dresses the lobby up with the Blender kit and adds new things to do.
 --   * DisasterGameManager still runs every disaster. This script listens to the same
 --     ServerStorage.RoundEvents signal and adds sirens + a storm vortex over the island.
+--   * DisasterFX (each player's screen): red title intro, extreme wind, weather, VFX and new
+--     Blender looks for the hazards. The new tornado funnel goes in ServerStorage > TornadoAssets.
+--   * ShopUI (each player's screen): the new card-style shop; ShopItems lists what it sells.
 -- Delete this script and everything goes back to how it was.
 --
 -- Needs the Blender models: File > Import 3D > LobbyKit.glb (the model can stay in Workspace or
@@ -39,17 +42,62 @@ local GOLD = Color3.fromRGB(255, 205, 70)
 --------------------------------------------------------------------
 -- Shared bits
 --------------------------------------------------------------------
--- the animations run on each player's device
-local animator = script:FindFirstChild("KitAnimator")
-if animator then
-	animator.Parent = ReplicatedStorage
-end
-
 local hasKit = Kit.load()
 if hasKit then
 	print("[LobbyUpgrade] Blender kit loaded")
 else
 	warn("[LobbyUpgrade] LobbyKit not found - import LobbyKit.glb (File > Import 3D). Running without the models.")
+end
+
+-- Blender props the client scripts clone: shop icons, disaster effect pieces, new hazard looks
+local CLIENT_PROPS = {
+	"EggCommon", "EggRare", "EggMythic", "CoinsS", "CoinsM", "CoinsL", "CoinsXL",
+	"Shield", "ReviveHeart", "Clover", "CoinX2", "Crown", "GiftBox", "TrailSwirl",
+	"FxPlank", "FxRock", "FxMeteorChunk", "FxLeaf", "FxIceShard", "FxBolt", "FxShockRing", "FxWindStreak", "FxDroplet", "FxCloudPuff",
+	"MeteorRock", "IceCrystal", "AcidBlob", "LavaBlob", "LavaPool", "QuakeSpike", "Shark", "TsunamiCurl",
+}
+local propsFolder = ReplicatedStorage:FindFirstChild("LobbyKitProps")
+if not propsFolder then
+	propsFolder = Instance.new("Folder")
+	propsFolder.Name = "LobbyKitProps"
+	propsFolder.Parent = ReplicatedStorage
+end
+if hasKit then
+	Kit.publish(CLIENT_PROPS, propsFolder)
+	-- New tornado funnel: TornadoDisaster already uses ServerStorage > TornadoAssets > Tornado when it exists
+	-- (pieces named layer* spin). A tornado model you put there yourself is kept.
+	local tornadoAssets = ServerStorage:FindFirstChild("TornadoAssets")
+	if not tornadoAssets then
+		tornadoAssets = Instance.new("Folder")
+		tornadoAssets.Name = "TornadoAssets"
+		tornadoAssets.Parent = ServerStorage
+	end
+	if not tornadoAssets:FindFirstChild("Tornado") then
+		Kit.spawn("Tornado", CFrame.new(), { parent = tornadoAssets, shadows = false })
+	end
+end
+
+-- client scripts + the shop list run on each player's device
+for _, name in ipairs({ "KitAnimator", "DisasterFX", "ShopUI", "ShopItems" }) do
+	local child = script:FindFirstChild(name)
+	if child then
+		child.Parent = ReplicatedStorage
+	end
+end
+
+-- new Robux coin packs: added to ProgressionConfig.Products so ProgressionServer's existing
+-- purchase code (ProcessReceipt, Kind = "Coins") pays them out
+do
+	local itemsModule = ReplicatedStorage:FindFirstChild("ShopItems")
+	local configModule = ReplicatedStorage:FindFirstChild("ProgressionConfig")
+	if itemsModule and configModule then
+		local ok, err = pcall(function()
+			require(itemsModule).AddProducts(require(configModule))
+		end)
+		if not ok then
+			warn("[LobbyUpgrade] Could not add the new shop products: " .. tostring(err))
+		end
+	end
 end
 
 local function findOrCreateBindable(name)
@@ -738,6 +786,24 @@ local PALETTE = {
 	goldGlow = { Color3.fromRGB(255, 214, 90), "Neon", 0 },
 	greenGlow = { Color3.fromRGB(90, 255, 140), "Neon", 0 },
 	orangeGlow = { Color3.fromRGB(255, 140, 40), "Neon", 0 },
+	cream = { Color3.fromRGB(240, 232, 208), "SmoothPlastic", 0 },
+	spot = { Color3.fromRGB(176, 140, 96), "SmoothPlastic", 0 },
+	pink = { Color3.fromRGB(255, 120, 190), "SmoothPlastic", 0 },
+	ice = { Color3.fromRGB(170, 225, 255), "Ice", 0.15 },
+	water = { Color3.fromRGB(80, 170, 255), "Glass", 0.3 },
+	windWhite = { Color3.fromRGB(255, 255, 255), "SmoothPlastic", 0.45 },
+	dust = { Color3.fromRGB(176, 150, 118), "SmoothPlastic", 0.3 },
+	violet = { Color3.fromRGB(130, 105, 175), "SmoothPlastic", 0.3 },
+	indigo = { Color3.fromRGB(62, 52, 118), "SmoothPlastic", 0.25 },
+	coreGlow = { Color3.fromRGB(255, 236, 205), "Neon", 0.55 },
+	fireTrail = { Color3.fromRGB(255, 120, 30), "Neon", 0.35 },
+	acidGlow = { Color3.fromRGB(140, 255, 60), "Neon", 0 },
+	lavaGlow = { Color3.fromRGB(255, 110, 20), "Neon", 0 },
+	waveDeep = { Color3.fromRGB(10, 80, 160), "Glass", 0.15 },
+	waveLight = { Color3.fromRGB(110, 225, 255), "Glass", 0.25 },
+	foam = { Color3.fromRGB(240, 250, 255), "SmoothPlastic", 0 },
+	sharkGrey = { Color3.fromRGB(100, 118, 140), "SmoothPlastic", 0 },
+	sharkBelly = { Color3.fromRGB(225, 232, 240), "SmoothPlastic", 0 },
 	tint = { Color3.fromRGB(255, 70, 70), "Neon", 0 },
 	x = { Color3.fromRGB(255, 0, 255), "SmoothPlastic", 1 },
 }
@@ -980,6 +1046,17 @@ function Kit.fade(model, visible, seconds)
 	end
 end
 
+-- Copies the named props into `folder` (in ReplicatedStorage) so client scripts (shop icons,
+-- disaster effects) can clone them. They are untagged, so KitAnimator leaves the templates alone.
+function Kit.publish(names, folder)
+	for _, name in ipairs(names) do
+		local model = Kit.spawn(name, CFrame.new(), { parent = folder, shadows = false })
+		if model then
+			CollectionService:RemoveTag(model, "KitModel")
+		end
+	end
+end
+
 function Kit.setTransparency(model, value)
 	for _, d in ipairs(model:GetDescendants()) do
 		if d:IsA("BasePart") and d.Name ~= "KitRoot" then
@@ -1173,4 +1250,1801 @@ CollectionService:GetInstanceAddedSignal("KitJumpPad"):Connect(hookPad)
 for _, pad in ipairs(CollectionService:GetTagged("KitJumpPad")) do
 	hookPad(pad)
 end
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_DisasterFX"><Properties><string name="Name">DisasterFX</string><bool name="Disabled">false</bool><token name="RunContext">2</token><ProtectedString name="Source"><![CDATA[-- DisasterFX  (Script with RunContext = Client, child of the LobbyUpgrade script)
+--
+-- LobbyUpgrade moves this into ReplicatedStorage when the game starts, so it runs on every
+-- player's device. Everything here is visual/audio on that player's screen; damage, hit-boxes
+-- and timings stay exactly as DisasterGameManager runs them. For every disaster:
+--   * intro: the disaster's name slams onto the screen in big red letters
+--   * extreme wind: flying Blender debris + wind streaks around the camera, gusting wind roar,
+--     GlobalWind for grass/particles, and a push on your own character while on the island
+--   * weather (rain / acid / snow / ash / embers / dust), colour grading, lightning flashes, rumble
+--   * new Blender looks for the hazards: meteors, ice shards, acid drops, lava blobs + pools,
+--     quake rings, lightning bolts, the shark and the tsunami wave (the old block looks are hidden
+--     on this screen only). The tornado's new funnel is set up on the server by LobbyUpgrade.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+
+--------------------------------------------------------------------
+-- Settings
+--------------------------------------------------------------------
+local SHOW_INTRO = true
+local REPLACE_HAZARD_LOOKS = true
+local WIND_PUSH = 0.3          -- 0 = wind is visual only. Push = wind speed x this, in studs/s per second
+local DEBRIS_COUNT = 30        -- flying Blender debris pieces around the camera
+local STREAK_COUNT = 14        -- wind streaks around the camera
+local TITLE_COLOR = Color3.fromRGB(235, 28, 28)
+
+local TEX_SPARK = "rbxasset://textures/particles/sparkles_main.dds"
+local TEX_SMOKE = "rbxasset://textures/particles/smoke_main.dds"
+local TEX_FIRE = "rbxasset://textures/particles/fire_main.dds"
+local WHITE = Color3.new(1, 1, 1)
+
+-- Per base disaster. Mythic combos merge the profiles of their parts.
+--   wind = studs/s, weather = list of weather kinds, shake = constant camera shake,
+--   debris = Blender props blown around, flashes = lightning flashes, crackle = fire crackle loop
+local C3 = Color3.fromRGB
+local PROFILES = {
+	MeteorShower = { wind = 40, weather = { "ash", "embers" }, tint = C3(255, 150, 100), shake = 0.25, debris = { "FxRock", "FxMeteorChunk" }, crackle = true },
+	RisingFlood = { wind = 55, weather = { "rain" }, tint = C3(150, 195, 255), shake = 0.15, debris = { "FxLeaf", "FxDroplet" }, flashes = true },
+	LightningStorm = { wind = 65, weather = { "rain" }, tint = C3(165, 165, 230), shake = 0.15, debris = { "FxLeaf", "FxPlank" }, flashes = true },
+	Tsunami = { wind = 70, weather = { "rain" }, tint = C3(140, 200, 255), shake = 0.3, debris = { "FxDroplet", "FxLeaf" } },
+	DragonAttack = { wind = 35, weather = { "embers", "ash" }, tint = C3(255, 150, 90), shake = 0.25, debris = { "FxRock" }, crackle = true },
+	Tornado = { wind = 100, weather = { "rain", "dust" }, tint = C3(170, 185, 160), shake = 0.35, debris = { "FxPlank", "FxLeaf", "FxRock" }, flashes = true },
+	VolcanicEruption = { wind = 35, weather = { "ash", "embers" }, tint = C3(255, 120, 80), shake = 0.35, debris = { "FxMeteorChunk", "FxRock" }, crackle = true },
+	Earthquake = { wind = 30, weather = { "dust" }, tint = C3(225, 195, 150), shake = 0.6, debris = { "FxRock" } },
+	AcidRain = { wind = 45, weather = { "acid" }, tint = C3(170, 255, 140), shake = 0.1, debris = { "FxLeaf" } },
+	SharkAttack = { wind = 45, weather = { "rain" }, tint = C3(140, 220, 210), shake = 0.1, debris = { "FxDroplet" } },
+	Blizzard = { wind = 85, weather = { "snow" }, tint = C3(200, 230, 255), shake = 0.15, debris = { "FxIceShard" } },
+}
+
+--------------------------------------------------------------------
+-- Setup
+--------------------------------------------------------------------
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local assets = ReplicatedStorage:WaitForChild("DisasterAssets")
+local remotes = assets:WaitForChild("Remotes")
+local Config = require(assets:WaitForChild("DisasterConfig"))
+local soundsFolder = assets:FindFirstChild("Sounds")
+local props = ReplicatedStorage:WaitForChild("LobbyKitProps", 30) -- Blender templates (nil without the kit)
+
+local fxFolder = Instance.new("Folder")
+fxFolder.Name = "DisasterFXLocal"
+fxFolder.Parent = workspace
+
+local rng = Random.new()
+
+local function mk(class, p, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(p) do
+		inst[k] = v
+	end
+	inst.Parent = parent
+	return inst
+end
+
+local function ns(...)
+	local a, pts = { ... }, {}
+	for i = 1, #a, 2 do
+		table.insert(pts, NumberSequenceKeypoint.new(a[i], a[i + 1]))
+	end
+	return NumberSequence.new(pts)
+end
+
+local function ghost(cf, size)
+	return mk("Part", {
+		Size = size or Vector3.new(1, 1, 1),
+		CFrame = cf,
+		Anchored = true,
+		CanCollide = false,
+		CanTouch = false,
+		CanQuery = false,
+		CastShadow = false,
+		Transparency = 1,
+	}, fxFolder)
+end
+
+local function emitter(parent, p)
+	local base = { LightInfluence = 0, Rate = 0 }
+	for k, v in pairs(p) do
+		base[k] = v
+	end
+	return mk("ParticleEmitter", base, parent)
+end
+
+local function cloneProp(name, scale, tint)
+	local t = props and props:FindFirstChild(name)
+	if not t then
+		return nil
+	end
+	local m = t:Clone()
+	if scale and math.abs(scale - 1) > 0.01 then
+		m:ScaleTo(scale)
+	end
+	for _, d in ipairs(m:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.CastShadow = false
+			if tint and d.Material == Enum.Material.Neon then
+				d.Color = tint
+			end
+		end
+	end
+	m.Parent = fxFolder
+	return m
+end
+
+local function setModelFade(model, alpha)
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.LocalTransparencyModifier = alpha
+		end
+	end
+end
+
+-- sounds come from the game's own DisasterAssets > Sounds (so every id is one the game already uses)
+local function sound(name, p, parent)
+	local t = soundsFolder and soundsFolder:FindFirstChild(name)
+	if not t or not t:IsA("Sound") then
+		return nil
+	end
+	local s = t:Clone()
+	s.Looped = false
+	for k, v in pairs(p or {}) do
+		s[k] = v
+	end
+	s.Parent = parent or SoundService
+	return s
+end
+
+local function oneShot(name, volume, speed, position)
+	local holder = position and ghost(CFrame.new(position)) or nil
+	local s = sound(name, { Volume = volume, PlaybackSpeed = speed, RollOffMaxDistance = 600 }, holder)
+	if s then
+		s:Play()
+		Debris:AddItem(holder or s, 10)
+	elseif holder then
+		holder:Destroy()
+	end
+end
+
+--------------------------------------------------------------------
+-- Camera shake (constant level + short kicks)
+--------------------------------------------------------------------
+local shakeBase = 0
+local kicks = {}
+local function kick(amp, duration)
+	table.insert(kicks, { amp = amp, t = os.clock(), dur = duration })
+end
+
+RunService:BindToRenderStep("DisasterFXShake", Enum.RenderPriority.Camera.Value + 1, function()
+	if camera.CameraType ~= Enum.CameraType.Custom then
+		return -- a scripted camera does not reset every frame, so the offsets would add up
+	end
+	local now = os.clock()
+	local amp = shakeBase
+	for i = #kicks, 1, -1 do
+		local k = kicks[i]
+		local a = (now - k.t) / k.dur
+		if a >= 1 then
+			table.remove(kicks, i)
+		else
+			amp += k.amp * (1 - a) ^ 2
+		end
+	end
+	if amp > 0.001 then
+		local t = now * 26
+		camera.CFrame *= CFrame.Angles(math.noise(t, 0.3) * amp * 0.035, math.noise(0.7, t) * amp * 0.035, math.noise(t, t * 0.5) * amp * 0.02)
+	end
+end)
+
+--------------------------------------------------------------------
+-- Intro card: the name in big red letters
+--------------------------------------------------------------------
+local playerGui = player:WaitForChild("PlayerGui")
+local introGui = mk("ScreenGui", { Name = "DisasterIntro", ResetOnSpawn = false, IgnoreGuiInset = true, DisplayOrder = 40, Enabled = false }, playerGui)
+local flash = mk("Frame", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = C3(255, 40, 40), BackgroundTransparency = 1, BorderSizePixel = 0 }, introGui)
+local barTop = mk("Frame", { Size = UDim2.fromScale(1, 0), BackgroundColor3 = C3(0, 0, 0), BorderSizePixel = 0 }, introGui)
+local barBottom = mk("Frame", { AnchorPoint = Vector2.new(0, 1), Position = UDim2.fromScale(0, 1), Size = UDim2.fromScale(1, 0), BackgroundColor3 = C3(0, 0, 0), BorderSizePixel = 0 }, introGui)
+local title = mk("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.42),
+	Size = UDim2.fromScale(0.92, 0.22),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.LuckiestGuy,
+	TextScaled = true,
+	TextColor3 = TITLE_COLOR,
+	Text = "",
+}, introGui)
+mk("UITextSizeConstraint", { MaxTextSize = 150 }, title)
+local titleStroke = mk("UIStroke", { Color = C3(20, 0, 0), Thickness = 6, LineJoinMode = Enum.LineJoinMode.Round }, title)
+mk("UIGradient", { Rotation = 90, Color = ColorSequence.new(C3(255, 255, 255), C3(160, 150, 150)) }, title)
+local titleScale = mk("UIScale", { Scale = 1 }, title)
+local subtitle = mk("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.fromScale(0.5, 0.54),
+	Size = UDim2.fromScale(0.7, 0.06),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextScaled = true,
+	TextColor3 = WHITE,
+	Text = "",
+}, introGui)
+local subStroke = mk("UIStroke", { Color = C3(0, 0, 0), Thickness = 3 }, subtitle)
+
+local introToken = 0
+local function tween(obj, t, goal, style, dir)
+	local tw = TweenService:Create(obj, TweenInfo.new(t, style or Enum.EasingStyle.Quad, dir or Enum.EasingDirection.Out), goal)
+	tw:Play()
+	return tw
+end
+
+local function playIntro(def)
+	introToken += 1
+	local token = introToken
+	local rarity = Config.Rarities and Config.Rarities[def.Rarity or "Common"]
+	title.Text = string.upper(def.Name)
+	subtitle.Text = ("⚠  %s DISASTER  ⚠"):format(string.upper(def.Rarity or "Common"))
+	subtitle.TextColor3 = rarity and rarity.Color or WHITE
+	titleScale.Scale = 4
+	title.Rotation = -10
+	title.TextTransparency = 1
+	titleStroke.Transparency = 1
+	subtitle.TextTransparency = 1
+	subStroke.Transparency = 1
+	introGui.Enabled = true
+
+	tween(barTop, 0.25, { Size = UDim2.fromScale(1, 0.11) })
+	tween(barBottom, 0.25, { Size = UDim2.fromScale(1, 0.11) })
+	oneShot("Whoosh", 0.9, 0.7)
+	tween(titleScale, 0.32, { Scale = 1 }, Enum.EasingStyle.Back)
+	tween(title, 0.32, { Rotation = 0, TextTransparency = 0 }, Enum.EasingStyle.Back)
+	tween(titleStroke, 0.2, { Transparency = 0 })
+
+	task.delay(0.3, function()
+		if token ~= introToken then
+			return
+		end
+		-- the slam
+		flash.BackgroundTransparency = 0.35
+		tween(flash, 0.5, { BackgroundTransparency = 1 })
+		oneShot("Explosion", 1, 0.75)
+		oneShot("Thunder", 0.8, 0.6)
+		kick(1.6, 0.6)
+		for i = 1, 6 do -- quick rattle of the letters
+			title.Position = UDim2.new(0.5, rng:NextInteger(-9, 9), 0.42, rng:NextInteger(-6, 6))
+			task.wait(0.035)
+		end
+		title.Position = UDim2.fromScale(0.5, 0.42)
+		tween(subtitle, 0.3, { TextTransparency = 0 })
+		tween(subStroke, 0.3, { Transparency = 0 })
+		tween(titleScale, 0.8, { Scale = 1.06 }, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut)
+	end)
+
+	task.delay(2.4, function()
+		if token ~= introToken then
+			return
+		end
+		tween(titleScale, 0.35, { Scale = 1.35 }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+		tween(title, 0.35, { TextTransparency = 1 })
+		tween(titleStroke, 0.3, { Transparency = 1 })
+		tween(subtitle, 0.3, { TextTransparency = 1 })
+		tween(subStroke, 0.3, { Transparency = 1 })
+		tween(barTop, 0.35, { Size = UDim2.fromScale(1, 0) })
+		tween(barBottom, 0.35, { Size = UDim2.fromScale(1, 0) }).Completed:Wait()
+		if token == introToken then
+			introGui.Enabled = false
+		end
+	end)
+end
+
+--------------------------------------------------------------------
+-- Impacts (used by the hazard looks)
+--------------------------------------------------------------------
+local function impact(pos, color, chunkName, big)
+	local dist = (camera.CFrame.Position - pos).Magnitude
+	kick(math.clamp(1 - dist / 170, 0, 1) * (big and 1.6 or 0.8), 0.45)
+
+	local holder = ghost(CFrame.new(pos), Vector3.new(4, 1, 4))
+	emitter(holder, {
+		Texture = TEX_SMOKE,
+		Color = ColorSequence.new(C3(110, 95, 85)),
+		Size = ns(0, 4, 1, big and 18 or 10),
+		Transparency = ns(0, 0.3, 1, 1),
+		Lifetime = NumberRange.new(1, 2.2),
+		Speed = NumberRange.new(10, big and 30 or 18),
+		SpreadAngle = Vector2.new(80, 80),
+		EmissionDirection = Enum.NormalId.Top,
+		Drag = 2.5,
+	}):Emit(big and 30 or 14)
+	emitter(holder, {
+		Texture = TEX_SPARK,
+		Color = ColorSequence.new(color, WHITE),
+		LightEmission = 1,
+		Size = ns(0, 1.2, 1, 0),
+		Lifetime = NumberRange.new(0.5, 1.1),
+		Speed = NumberRange.new(25, 55),
+		SpreadAngle = Vector2.new(70, 70),
+		EmissionDirection = Enum.NormalId.Top,
+		Acceleration = Vector3.new(0, -60, 0),
+	}):Emit(big and 50 or 20)
+	local light = mk("PointLight", { Color = color, Range = big and 45 or 25, Brightness = 6 }, holder)
+	tween(light, 0.7, { Brightness = 0 })
+	Debris:AddItem(holder, 3)
+
+	-- expanding shock ring
+	local ring = cloneProp("FxShockRing", 0.3, color)
+	if ring then
+		local base = CFrame.new(pos + Vector3.new(0, 0.6, 0))
+		local grow = big and 3.2 or 1.6
+		task.spawn(function()
+			local t0 = os.clock()
+			while ring.Parent do
+				local a = math.min((os.clock() - t0) / 0.55, 1)
+				ring:ScaleTo(0.3 + (grow - 0.3) * (1 - (1 - a) ^ 3))
+				ring:PivotTo(base)
+				setModelFade(ring, a)
+				if a >= 1 then
+					break
+				end
+				RunService.RenderStepped:Wait()
+			end
+			ring:Destroy()
+		end)
+	end
+
+	-- Blender chunks flung out
+	if chunkName then
+		for _ = 1, big and 7 or 4 do
+			local chunk = cloneProp(chunkName, rng:NextNumber(0.6, 1.2))
+			if chunk then
+				local vel = Vector3.new(rng:NextNumber(-1, 1), rng:NextNumber(0.8, 1.6), rng:NextNumber(-1, 1)) * (big and 38 or 24)
+				local spin = CFrame.Angles(rng:NextNumber(-0.3, 0.3), rng:NextNumber(-0.3, 0.3), rng:NextNumber(-0.3, 0.3))
+				task.spawn(function()
+					local p, rot, t0 = pos, CFrame.new(), os.clock()
+					while chunk.Parent and os.clock() - t0 < 1.4 do
+						local dt = RunService.RenderStepped:Wait()
+						vel += Vector3.new(0, -110, 0) * dt
+						p += vel * dt
+						rot *= spin
+						chunk:PivotTo(CFrame.new(p) * rot)
+						setModelFade(chunk, math.max(0, (os.clock() - t0 - 0.9) / 0.5))
+					end
+					chunk:Destroy()
+				end)
+			end
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- New hazard looks (follow the real hazard, hide its old look on this screen)
+--------------------------------------------------------------------
+local swaps = {} -- [hazard] = { model, host, pose(hostCF, t), fade = bool, onGone(lastCF), extra = {models} }
+
+local function hideLook(inst)
+	if inst:IsA("BasePart") then
+		inst.LocalTransparencyModifier = 1
+	end
+	for _, d in ipairs(inst:GetDescendants()) do
+		if d:IsA("BasePart") then
+			d.LocalTransparencyModifier = 1
+		end
+	end
+end
+
+local function track(hazard, entry)
+	entry.lastCF = entry.host.CFrame
+	entry.born = os.clock()
+	swaps[hazard] = entry
+end
+
+local function yawSpin(speed, phase)
+	return function(cf, t)
+		return CFrame.new(cf.Position) * CFrame.Angles(0, t * speed + phase, 0)
+	end
+end
+
+local LOOKS = {}
+
+LOOKS.Meteor = function(part)
+	local model = cloneProp("MeteorRock", part.Size.X / 8)
+	if not model then
+		return
+	end
+	hideLook(part)
+	local rock = model:FindFirstChild("rock")
+	if rock then
+		emitter(rock, {
+			Texture = TEX_FIRE,
+			Color = ColorSequence.new(C3(255, 200, 80), C3(255, 70, 20)),
+			LightEmission = 1,
+			Size = ns(0, 7, 1, 0),
+			Transparency = ns(0, 0.1, 1, 1),
+			Lifetime = NumberRange.new(0.4, 0.7),
+			Speed = NumberRange.new(12, 24),
+			EmissionDirection = Enum.NormalId.Top,
+			Rate = 70,
+		})
+	end
+	track(part, {
+		model = model,
+		host = part,
+		pose = yawSpin(4, rng:NextNumber(0, 6)),
+		onGone = function(cf)
+			impact(cf.Position, C3(255, 140, 40), "FxMeteorChunk", true)
+			oneShot("Explosion", 0.8, 0.55, cf.Position)
+		end,
+	})
+end
+
+LOOKS.IceShard = function(part)
+	local model = cloneProp("IceCrystal", 1.5)
+	if not model then
+		return
+	end
+	hideLook(part)
+	track(part, {
+		model = model,
+		host = part,
+		pose = yawSpin(3, rng:NextNumber(0, 6)),
+		onGone = function(cf)
+			impact(cf.Position, C3(170, 225, 255), "FxIceShard", false)
+		end,
+	})
+end
+
+LOOKS.AcidDrop = function(part)
+	local model = cloneProp("AcidBlob", part.Size.X / 2.5)
+	if not model then
+		return
+	end
+	hideLook(part)
+	track(part, {
+		model = model,
+		host = part,
+		pose = yawSpin(2, 0),
+		onGone = function(cf)
+			impact(cf.Position, C3(140, 255, 60), nil, false)
+		end,
+	})
+end
+
+local function lavaCube(part)
+	local model = cloneProp("LavaBlob", part.Size.X / 5)
+	if not model then
+		return
+	end
+	hideLook(part)
+	local spin = CFrame.Angles(rng:NextNumber(0, 6), rng:NextNumber(0, 6), 0)
+	track(part, {
+		model = model,
+		host = part,
+		fade = true,
+		pose = function(cf, t)
+			return CFrame.new(cf.Position) * spin * CFrame.Angles(t * 3, t * 2, 0)
+		end,
+	})
+end
+
+LOOKS.LavaPool = function(part)
+	local model = cloneProp("LavaPool", part.Size.X / 18)
+	if not model then
+		return
+	end
+	hideLook(part)
+	local lava = model:FindFirstChild("lava")
+	if lava then
+		emitter(lava, {
+			Texture = TEX_SPARK,
+			Color = ColorSequence.new(C3(255, 170, 60), C3(255, 60, 20)),
+			LightEmission = 1,
+			Size = ns(0, 0.6, 1, 0),
+			Lifetime = NumberRange.new(1, 2),
+			Speed = NumberRange.new(4, 10),
+			EmissionDirection = Enum.NormalId.Top,
+			Rate = 18,
+		})
+		mk("PointLight", { Color = C3(255, 120, 40), Range = 22, Brightness = 2 }, lava)
+	end
+	track(part, {
+		model = model,
+		host = part,
+		fade = true,
+		pose = function(cf)
+			return CFrame.new(cf.Position)
+		end,
+	})
+end
+
+LOOKS.QuakeRing = function(part)
+	if not (props and props:FindFirstChild("QuakeSpike")) then
+		return
+	end
+	hideLook(part)
+	local spikes = {}
+	for i = 1, 26 do
+		local s = cloneProp("QuakeSpike", rng:NextNumber(1.2, 1.9))
+		if s then
+			table.insert(spikes, { model = s, a = (i / 26) * math.pi * 2, yaw = rng:NextNumber(0, 6), tilt = rng:NextNumber(-0.25, 0.25) })
+			if i % 5 == 0 then
+				local rockPart = s:FindFirstChild("rock")
+				if rockPart then
+					emitter(rockPart, {
+						Texture = TEX_SMOKE,
+						Color = ColorSequence.new(C3(190, 160, 120)),
+						Size = ns(0, 3, 1, 8),
+						Transparency = ns(0, 0.5, 1, 1),
+						Lifetime = NumberRange.new(0.8, 1.6),
+						Speed = NumberRange.new(4, 9),
+						EmissionDirection = Enum.NormalId.Top,
+						Rate = 12,
+					})
+				end
+			end
+		end
+	end
+	track(part, {
+		model = nil,
+		host = part,
+		extra = spikes,
+		update = function()
+			local r = part.Size.Y / 2
+			local base = part.Position - Vector3.new(0, 0.5, 0)
+			for _, s in ipairs(spikes) do
+				local p = base + Vector3.new(math.cos(s.a) * r, 0, math.sin(s.a) * r)
+				s.model:PivotTo(CFrame.new(p) * CFrame.Angles(s.tilt, s.yaw, 0))
+			end
+		end,
+	})
+end
+
+LOOKS.LightningBolt = function(model)
+	if not (props and props:FindFirstChild("FxBolt")) then
+		return
+	end
+	task.defer(function() -- the segments are parented before the model, but wait one step to be safe
+		local top, bottom, first
+		for _, seg in ipairs(model:GetChildren()) do
+			if seg:IsA("BasePart") then
+				first = first or seg
+				local hi = seg.Position + Vector3.new(0, seg.Size.Y / 2, 0)
+				local lo = seg.Position - Vector3.new(0, seg.Size.Y / 2, 0)
+				if not top or hi.Y > top.Y then
+					top = hi
+				end
+				if not bottom or lo.Y < bottom.Y then
+					bottom = lo
+				end
+			end
+		end
+		if not top then
+			return
+		end
+		hideLook(model)
+		local height = math.max(top.Y - bottom.Y, 10)
+		local color = C3(255, 245, 170)
+		local main = cloneProp("FxBolt", height / 40, color)
+		local branches = {}
+		for i = 1, 2 do
+			local b = cloneProp("FxBolt", height / 40 * rng:NextNumber(0.25, 0.4), C3(170, 220, 255))
+			if b then
+				table.insert(branches, { model = b, f = rng:NextNumber(0.2, 0.6), cf = CFrame.Angles(rng:NextNumber(-0.7, 0.7), rng:NextNumber(0, 6), rng:NextNumber(0.4, 0.8) * (i == 1 and 1 or -1)) })
+			end
+		end
+		if not main then
+			return
+		end
+		local topCF = CFrame.new(Vector3.new(bottom.X, top.Y, bottom.Z)) * CFrame.Angles(0, rng:NextNumber(0, 6), 0)
+		local mainPart = main:FindFirstChild("bolt")
+		if mainPart then
+			mk("PointLight", { Color = color, Range = 60, Brightness = 10 }, mainPart)
+		end
+		impact(bottom, color, "FxRock", false)
+		local host = first
+		track(model, {
+			model = main,
+			host = host,
+			fade = true,
+			extra = branches,
+			pose = function()
+				return topCF
+			end,
+			update = function()
+				for _, b in ipairs(branches) do
+					b.model:PivotTo(topCF * CFrame.new(0, -height * b.f, 0) * b.cf)
+					setModelFade(b.model, host.Transparency)
+				end
+			end,
+		})
+	end)
+end
+
+LOOKS.Shark = function(model)
+	task.defer(function()
+		local body = model:FindFirstChild("Body")
+		local look = body and cloneProp("Shark", 1)
+		if not look then
+			return
+		end
+		hideLook(model)
+		track(model, {
+			model = look,
+			host = body,
+			pose = function(cf, t)
+				return cf * CFrame.Angles(0, math.sin(t * 6) * 0.12, 0) -- tail-wag sway
+			end,
+		})
+	end)
+end
+
+LOOKS.TsunamiWave = function(part)
+	local look = cloneProp("TsunamiCurl", 1)
+	if not look then
+		return
+	end
+	-- stretch only along the wall (X) so the curl keeps the hit-box height
+	local sx = part.Size.X / 250
+	local pivot = look:GetPivot()
+	for _, d in ipairs(look:GetDescendants()) do
+		if d:IsA("BasePart") then
+			local rel = pivot:ToObjectSpace(d.CFrame)
+			d.Size = Vector3.new(d.Size.X * sx, d.Size.Y, d.Size.Z)
+			d.CFrame = pivot * (CFrame.new(rel.Position.X * sx, rel.Position.Y, rel.Position.Z) * rel.Rotation)
+		end
+	end
+	local folder = part.Parent
+	if folder then
+		hideLook(folder)
+		local conn = folder.DescendantAdded:Connect(function(d)
+			if d:IsA("BasePart") then
+				d.LocalTransparencyModifier = 1
+			end
+		end)
+		look.Destroying:Once(function()
+			conn:Disconnect()
+		end)
+	end
+	local foam = look:FindFirstChild("foam")
+	if foam then
+		emitter(foam, {
+			Texture = TEX_SMOKE,
+			Color = ColorSequence.new(C3(235, 248, 255)),
+			Size = ns(0, 6, 1, 18),
+			Transparency = ns(0, 0.35, 1, 1),
+			Lifetime = NumberRange.new(1, 2),
+			Speed = NumberRange.new(10, 30),
+			SpreadAngle = Vector2.new(40, 40),
+			EmissionDirection = Enum.NormalId.Top,
+			Rate = 120,
+		})
+	end
+	track(part, {
+		model = look,
+		host = part,
+		pose = function(cf)
+			return cf
+		end,
+	})
+end
+
+LOOKS.DisasterFlood = function(part)
+	-- keep the water, add mist rolling over its surface
+	emitter(part, {
+		Texture = TEX_SMOKE,
+		Color = ColorSequence.new(C3(220, 240, 255)),
+		Size = ns(0, 8, 1, 20),
+		Transparency = ns(0, 0.75, 1, 1),
+		Lifetime = NumberRange.new(2, 4),
+		Speed = NumberRange.new(2, 6),
+		EmissionDirection = Enum.NormalId.Top,
+		Rate = 40,
+	})
+end
+
+local function onHazard(inst)
+	if inst:IsDescendantOf(fxFolder) then
+		return -- our own Blender copies share names with the hazards (Shark, LavaPool ...)
+	end
+	local name = inst.Name
+	local fn = LOOKS[name]
+	if not fn and string.sub(name, 1, 8) == "LavaCube" and inst:IsA("BasePart") then
+		fn = lavaCube
+	end
+	if fn and not swaps[inst] then
+		local ok, err = pcall(fn, inst)
+		if not ok then
+			warn("[DisasterFX] " .. name .. " look failed: " .. tostring(err))
+		end
+	end
+end
+
+local function dropSwap(hazard, entry)
+	swaps[hazard] = nil
+	if entry.onGone then
+		pcall(entry.onGone, entry.lastCF)
+	end
+	if entry.model then
+		entry.model:Destroy()
+	end
+	for _, e in ipairs(entry.extra or {}) do
+		e.model:Destroy()
+	end
+end
+
+RunService.RenderStepped:Connect(function()
+	local now = os.clock()
+	for hazard, entry in pairs(swaps) do
+		if not hazard.Parent or not entry.host.Parent then
+			dropSwap(hazard, entry)
+		else
+			entry.lastCF = entry.host.CFrame
+			if entry.model and entry.pose then
+				entry.model:PivotTo(entry.pose(entry.lastCF, now - entry.born))
+				if entry.fade then
+					setModelFade(entry.model, entry.host.Transparency)
+				end
+			end
+			if entry.update then
+				entry.update()
+			end
+		end
+	end
+end)
+
+--------------------------------------------------------------------
+-- Weather, wind, grading, ambience
+--------------------------------------------------------------------
+local active = nil -- the running disaster's state
+
+local WEATHER = {
+	rain = { Texture = TEX_SPARK, Color = ColorSequence.new(C3(190, 215, 255)), Size = ns(0, 0.22, 1, 0.22), Transparency = ns(0, 0.2, 1, 0.4),
+		Lifetime = NumberRange.new(1.1, 1.3), Speed = NumberRange.new(95, 115), Rate = 900, LightEmission = 0.3,
+		EmissionDirection = Enum.NormalId.Bottom, Orientation = Enum.ParticleOrientation.VelocityParallel },
+	acid = { Texture = TEX_SPARK, Color = ColorSequence.new(C3(150, 255, 70)), Size = ns(0, 0.28, 1, 0.28), Transparency = ns(0, 0.1, 1, 0.3),
+		Lifetime = NumberRange.new(1.1, 1.3), Speed = NumberRange.new(85, 105), Rate = 700, LightEmission = 0.8,
+		EmissionDirection = Enum.NormalId.Bottom, Orientation = Enum.ParticleOrientation.VelocityParallel },
+	snow = { Texture = TEX_SPARK, Color = ColorSequence.new(WHITE), Size = ns(0, 0.5, 1, 0.35), Transparency = ns(0, 0, 1, 0.3),
+		Lifetime = NumberRange.new(4, 6), Speed = NumberRange.new(14, 22), Rate = 600, RotSpeed = NumberRange.new(-90, 90),
+		EmissionDirection = Enum.NormalId.Bottom },
+	ash = { Texture = TEX_SMOKE, Color = ColorSequence.new(C3(70, 62, 60)), Size = ns(0, 0.6, 1, 0.3), Transparency = ns(0, 0.2, 1, 0.6),
+		Lifetime = NumberRange.new(4, 6), Speed = NumberRange.new(6, 12), Rate = 260, RotSpeed = NumberRange.new(-60, 60),
+		EmissionDirection = Enum.NormalId.Bottom },
+	embers = { Texture = TEX_SPARK, Color = ColorSequence.new(C3(255, 190, 80), C3(255, 70, 20)), Size = ns(0, 0.45, 1, 0), LightEmission = 1,
+		Lifetime = NumberRange.new(3, 5), Speed = NumberRange.new(4, 10), Rate = 120, EmissionDirection = Enum.NormalId.Bottom },
+	dust = { Texture = TEX_SMOKE, Color = ColorSequence.new(C3(200, 170, 130)), Size = ns(0, 6, 1, 14), Transparency = ns(0, 0.75, 0.5, 0.65, 1, 1),
+		Lifetime = NumberRange.new(3, 5), Speed = NumberRange.new(4, 10), Rate = 30, EmissionDirection = Enum.NormalId.Bottom },
+}
+
+local function mergeProfile(def)
+	local parts = def.Combo or { def.Id }
+	local p = { wind = 0, weather = {}, debris = {}, shake = 0, tint = def.Color or WHITE }
+	local seen = {}
+	for _, id in ipairs(parts) do
+		local base = PROFILES[id]
+		if base then
+			p.wind = math.max(p.wind, base.wind)
+			p.shake = math.max(p.shake, base.shake)
+			p.flashes = p.flashes or base.flashes
+			p.crackle = p.crackle or base.crackle
+			if not def.Combo then
+				p.tint = base.tint
+			end
+			for _, w in ipairs(base.weather) do
+				if not seen[w] then
+					seen[w] = true
+					table.insert(p.weather, w)
+				end
+			end
+			for _, d in ipairs(base.debris) do
+				table.insert(p.debris, d)
+			end
+		end
+	end
+	if def.Combo then
+		p.wind += 15 -- mythic combos blow harder
+		p.shake += 0.1
+	end
+	if p.wind == 0 then
+		p.wind, p.weather, p.debris, p.shake = 45, { "dust" }, { "FxLeaf", "FxRock" }, 0.2
+	end
+	return p
+end
+
+local function lobbyCenter()
+	local lobby = workspace:FindFirstChild("Lobby")
+	local origin = lobby and lobby:GetAttribute("Origin")
+	return typeof(origin) == "Vector3" and origin or nil
+end
+
+local function stopDisaster()
+	local s = active
+	active = nil
+	if not s then
+		return
+	end
+	s.alive = false
+	shakeBase = 0
+	workspace.GlobalWind = s.oldWind
+	for _, c in ipairs(s.conns) do
+		c:Disconnect()
+	end
+	for _, snd in ipairs(s.loops) do
+		tween(snd, 2, { Volume = 0 })
+		Debris:AddItem(snd, 2.2)
+	end
+	for _, e in ipairs(s.emitters) do
+		e.Enabled = false
+	end
+	Debris:AddItem(s.weatherPart, 7)
+	for _, d in ipairs(s.debris) do
+		d.model:Destroy()
+	end
+	if s.cc then
+		local cc = s.cc
+		tween(cc, 2, { TintColor = WHITE, Saturation = 0, Contrast = 0, Brightness = 0 })
+		Debris:AddItem(cc, 2.2)
+	end
+end
+
+local function startDisaster(def)
+	stopDisaster()
+	local p = mergeProfile(def)
+	local s = {
+		alive = true,
+		profile = p,
+		conns = {},
+		loops = {},
+		emitters = {},
+		debris = {},
+		oldWind = workspace.GlobalWind,
+		angle = rng:NextNumber(0, math.pi * 2),
+		dir = Vector3.new(1, 0, 0),
+		speed = 0,
+	}
+	active = s
+	shakeBase = p.shake * 0.35
+
+	-- colour grading
+	s.cc = mk("ColorCorrectionEffect", { Name = "DisasterFX" }, Lighting)
+	tween(s.cc, 1.5, { TintColor = p.tint:Lerp(WHITE, 0.55), Saturation = -0.12, Contrast = 0.14 })
+
+	-- weather around the camera
+	s.weatherPart = ghost(CFrame.new(camera.CFrame.Position), Vector3.new(150, 1, 150))
+	for _, kind in ipairs(p.weather) do
+		local spec = WEATHER[kind]
+		if spec then
+			table.insert(s.emitters, emitter(s.weatherPart, spec))
+		end
+	end
+
+	-- ambience: wind roar, low rumble, fire crackle
+	local wind = sound("Whoosh", { Looped = true, Volume = 0, PlaybackSpeed = 0.42 })
+	local rumble = sound("Thunder", { Looped = true, Volume = 0, PlaybackSpeed = 0.3 })
+	local crackle = p.crackle and sound("DragonFire", { Looped = true, Volume = 0, PlaybackSpeed = 0.55 }) or nil
+	for _, snd in ipairs({ wind, rumble, crackle }) do
+		if snd then
+			snd:Play()
+			table.insert(s.loops, snd)
+		end
+	end
+	if rumble then
+		tween(rumble, 2, { Volume = math.clamp(p.shake, 0.15, 0.6) })
+	end
+	if crackle then
+		tween(crackle, 2, { Volume = 0.3 })
+	end
+
+	-- flying Blender debris + wind streaks
+	local kinds = p.debris
+	for i = 1, DEBRIS_COUNT + STREAK_COUNT do
+		local isStreak = i > DEBRIS_COUNT
+		local name = isStreak and "FxWindStreak" or kinds[((i - 1) % math.max(#kinds, 1)) + 1]
+		local model = name and cloneProp(name, isStreak and rng:NextNumber(1.2, 2.2) or rng:NextNumber(0.7, 1.4))
+		if model then
+			table.insert(s.debris, {
+				model = model,
+				streak = isStreak,
+				pos = nil, -- placed on the first frame
+				speedK = isStreak and rng:NextNumber(1.3, 1.8) or rng:NextNumber(0.55, 1.05),
+				spin = CFrame.Angles(rng:NextNumber(-4, 4), rng:NextNumber(-4, 4), rng:NextNumber(-4, 4)),
+				rot = CFrame.Angles(rng:NextNumber(0, 6), rng:NextNumber(0, 6), rng:NextNumber(0, 6)),
+				wobble = rng:NextNumber(0, 10),
+			})
+		end
+	end
+
+	local function respawn(d, camPos, fresh)
+		local side = s.dir:Cross(Vector3.yAxis)
+		local back = fresh and rng:NextNumber(-70, 70) or -75
+		d.pos = camPos + s.dir * back + side * rng:NextNumber(-70, 70) + Vector3.new(0, rng:NextNumber(-8, 45), 0)
+	end
+
+	-- lightning flashes for the stormy ones
+	if p.flashes then
+		task.spawn(function()
+			while s.alive do
+				task.wait(rng:NextNumber(2, 6))
+				if not s.alive then
+					break
+				end
+				for _ = 1, rng:NextInteger(1, 2) do
+					s.cc.Brightness = 0.45
+					task.wait(0.06)
+					s.cc.Brightness = 0
+					task.wait(0.08)
+				end
+				task.delay(rng:NextNumber(0.3, 1.2), oneShot, "Thunder", rng:NextNumber(0.4, 0.7), rng:NextNumber(0.8, 1.1))
+			end
+		end)
+	end
+
+	local t0 = os.clock()
+	local lastAccel = 0
+	table.insert(s.conns, RunService.RenderStepped:Connect(function(dt)
+		local t = os.clock() - t0
+		local ramp = math.clamp(t / 2.5, 0, 1)
+		-- gusting wind that slowly swings around
+		local gust = 0.8 + 0.45 * math.noise(t * 0.35, 1.7)
+		s.speed = p.wind * gust * ramp
+		local a = s.angle + 0.6 * math.noise(t * 0.08, 4.2)
+		s.dir = Vector3.new(math.cos(a), 0, math.sin(a))
+		workspace.GlobalWind = s.dir * math.min(s.speed, 80) * 0.6
+		if wind then
+			wind.Volume = math.clamp(s.speed / 110, 0, 1) * 0.9
+			wind.PlaybackSpeed = 0.35 + gust * 0.12
+		end
+		shakeBase = p.shake * 0.35 * (0.6 + 0.6 * gust) * ramp
+
+		local camPos = camera.CFrame.Position
+		s.weatherPart.CFrame = CFrame.new(camPos + Vector3.new(0, 48, 0) - s.dir * s.speed * 0.4)
+		if os.clock() - lastAccel > 0.2 then
+			lastAccel = os.clock()
+			local accel = s.dir * s.speed * 0.7
+			for _, e in ipairs(s.emitters) do
+				e.Acceleration = accel
+			end
+		end
+
+		for _, d in ipairs(s.debris) do
+			if not d.pos then
+				respawn(d, camPos, true)
+			end
+			local rel = d.pos - camPos
+			if rel:Dot(s.dir) > 80 or rel.Magnitude > 120 then
+				respawn(d, camPos, false)
+			end
+			local v = s.dir * s.speed * d.speedK + Vector3.new(0, math.sin(t * 2 + d.wobble) * (d.streak and 1.5 or 5), 0)
+			d.pos += v * dt
+			if d.streak then
+				d.model:PivotTo(CFrame.fromMatrix(d.pos, s.dir, Vector3.yAxis))
+			else
+				d.rot = d.rot:Lerp(d.rot * d.spin, math.min(dt, 0.1))
+				d.model:PivotTo(CFrame.new(d.pos) * d.rot)
+			end
+		end
+	end))
+
+	-- extreme wind pushes your own character (not in the lobby)
+	if WIND_PUSH > 0 then
+		table.insert(s.conns, RunService.Heartbeat:Connect(function(dt)
+			local character = player.Character
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+			if not root or root.Anchored then
+				return
+			end
+			local lobby = lobbyCenter()
+			if lobby and (root.Position - lobby).Magnitude < 160 then
+				return
+			end
+			root.AssemblyLinearVelocity += s.dir * s.speed * WIND_PUSH * dt
+		end))
+	end
+
+	-- new hazard looks
+	if REPLACE_HAZARD_LOOKS then
+		table.insert(s.conns, workspace.DescendantAdded:Connect(onHazard))
+		for _, d in ipairs(workspace:GetDescendants()) do -- anything that spawned before we heard about it
+			if LOOKS[d.Name] then
+				onHazard(d)
+			end
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- Wiring
+--------------------------------------------------------------------
+remotes:WaitForChild("DisasterStarted").OnClientEvent:Connect(function(disasterId)
+	local def = Config.GetDisasterById(disasterId)
+	if not def then
+		return
+	end
+	if SHOW_INTRO then
+		task.spawn(playIntro, def)
+	end
+	local ok, err = pcall(startDisaster, def)
+	if not ok then
+		warn("[DisasterFX] start failed: " .. tostring(err))
+	end
+end)
+
+remotes:WaitForChild("DisasterEnded").OnClientEvent:Connect(function()
+	local ok, err = pcall(stopDisaster)
+	if not ok then
+		warn("[DisasterFX] stop failed: " .. tostring(err))
+	end
+end)
+]]></ProtectedString></Properties></Item><Item class="Script" referent="RBX_ShopUI"><Properties><string name="Name">ShopUI</string><bool name="Disabled">false</bool><token name="RunContext">2</token><ProtectedString name="Source"><![CDATA[-- ShopUI  (Script with RunContext = Client, child of the LobbyUpgrade script)
+--
+-- LobbyUpgrade moves this into ReplicatedStorage so it runs on every player's device.
+-- It replaces the old list-style shop with big colourful cards (3D Blender icons):
+--   Eggs (pet odds + Buy x1 / x3 / x10) - Coin Packs - Survival Gear - Boosts (passes) - Trails - Free Item
+-- Nothing about buying changes: it uses the same remotes as before
+-- (ProgressionRemotes for trails / passes / products / daily, PetRemotes for hatching).
+-- Whenever the old Shop panel opens (menu button or lobby kiosk) it is closed and this one opens.
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+
+local Items = require(ReplicatedStorage:WaitForChild("ShopItems"))
+local Config = require(ReplicatedStorage:WaitForChild("ProgressionConfig"))
+local PetConfig = require(ReplicatedStorage:WaitForChild("PetConfig"))
+local PetModelBuilder = require(ReplicatedStorage:WaitForChild("PetModelBuilder"))
+local remotes = ReplicatedStorage:WaitForChild("ProgressionRemotes")
+local petRequest = ReplicatedStorage:WaitForChild("PetRemotes"):WaitForChild("PetRequest")
+local props = ReplicatedStorage:WaitForChild("LobbyKitProps", 30)
+
+Items.AddProducts(Config) -- so the new coin packs can be looked up here too
+
+local DataUpdate = remotes:WaitForChild("DataUpdate")
+local RequestData = remotes:WaitForChild("RequestData")
+local BuyCosmetic = remotes:WaitForChild("BuyCosmetic")
+local EquipCosmetic = remotes:WaitForChild("EquipCosmetic")
+local ClaimDaily = remotes:WaitForChild("ClaimDaily")
+local PromptPass = remotes:WaitForChild("PromptPass")
+local PromptProduct = remotes:WaitForChild("PromptProduct")
+local ShopOpened = remotes:WaitForChild("ShopOpened")
+local Notify = remotes:WaitForChild("Notify")
+
+--------------------------------------------------------------------
+-- Style
+--------------------------------------------------------------------
+local C3 = Color3.fromRGB
+local WHITE = C3(255, 255, 255)
+local INK = C3(20, 18, 30)
+local GREEN_TOP, GREEN_BOT = C3(120, 255, 70), C3(40, 200, 20)
+local GREY_TOP, GREY_BOT = C3(170, 175, 190), C3(110, 115, 130)
+local FONT = Enum.Font.FredokaOne
+local TITLE_FONT = Enum.Font.LuckiestGuy
+local ROBUX = utf8.char(0xE002) -- Roblox renders this as the Robux icon
+
+local function mk(class, p, parent)
+	local inst = Instance.new(class)
+	for k, v in pairs(p) do
+		inst[k] = v
+	end
+	inst.Parent = parent
+	return inst
+end
+local function corner(parent, px)
+	return mk("UICorner", { CornerRadius = UDim.new(0, px or 14) }, parent)
+end
+local function stroke(parent, thickness, color)
+	return mk("UIStroke", { Thickness = thickness or 3, Color = color or INK, ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual }, parent)
+end
+local function gradient(parent, top, bottom, rotation)
+	return mk("UIGradient", { Color = ColorSequence.new(top, bottom), Rotation = rotation or 90 }, parent)
+end
+local function text(parent, p)
+	local base = {
+		BackgroundTransparency = 1,
+		Font = FONT,
+		TextColor3 = WHITE,
+		TextScaled = true,
+	}
+	for k, v in pairs(p) do
+		if k ~= "StrokeThickness" then
+			base[k] = v
+		end
+	end
+	local l = mk("TextLabel", base, parent)
+	stroke(l, p.StrokeThickness or 2.5)
+	return l
+end
+local function fmt(n)
+	local s = tostring(math.floor(n))
+	while true do
+		local k
+		s, k = string.gsub(s, "^(-?%d+)(%d%d%d)", "%1,%2")
+		if k == 0 then
+			return s
+		end
+	end
+end
+
+--------------------------------------------------------------------
+-- 3D icons (ViewportFrames that slowly turn while the shop is open)
+--------------------------------------------------------------------
+local spinners = {}
+
+local function viewport(parent, model, opts)
+	opts = opts or {}
+	local vp = mk("ViewportFrame", {
+		BackgroundTransparency = 1,
+		Size = opts.size or UDim2.fromScale(1, 1),
+		Position = opts.position or UDim2.new(),
+		AnchorPoint = opts.anchor or Vector2.zero,
+		Ambient = C3(170, 170, 185),
+		LightColor = C3(255, 250, 240),
+		LightDirection = Vector3.new(-0.6, -1, -0.8),
+		ZIndex = opts.z or 3,
+	}, parent)
+	if not model then
+		return vp
+	end
+	model.Parent = vp
+	local cf, size = model:GetBoundingBox()
+	local cam = mk("Camera", { FieldOfView = 34 }, vp)
+	vp.CurrentCamera = cam
+	local dist = math.max(size.X, size.Y, size.Z) * (opts.zoom or 1.75)
+	local facing = opts.facing or 1 -- 1: model front is +Z (kit props), -1: front is -Z (pets)
+	local center = cf.Position
+	cam.CFrame = CFrame.lookAt(center + Vector3.new(0, size.Y * 0.18, dist * facing), center)
+	if opts.spin ~= false then
+		table.insert(spinners, { model = model, base = model:GetPivot(), center = center, phase = math.random() * 6, speed = opts.speed or 0.6 })
+	end
+	return vp
+end
+
+local function kitModel(name, tint)
+	local t = props and props:FindFirstChild(name)
+	if not t then
+		return nil
+	end
+	local m = t:Clone()
+	if tint then
+		for _, d in ipairs(m:GetDescendants()) do
+			if d:IsA("BasePart") and d.Material == Enum.Material.Neon then
+				d.Color = tint
+			end
+		end
+	end
+	return m
+end
+
+--------------------------------------------------------------------
+-- Window
+--------------------------------------------------------------------
+local gui = mk("ScreenGui", { Name = "ShopUI", ResetOnSpawn = false, DisplayOrder = 20, Enabled = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets }, playerGui)
+local dim = mk("TextButton", { Size = UDim2.fromScale(1, 1), BackgroundColor3 = C3(0, 0, 0), BackgroundTransparency = 0.45, Text = "", AutoButtonColor = false }, gui)
+local window = mk("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromScale(0.94, 0.9),
+	BackgroundColor3 = WHITE, -- the gradient below gives the colour
+}, gui)
+corner(window, 20)
+stroke(window, 4, INK)
+gradient(window, C3(58, 52, 110), C3(28, 26, 52))
+mk("UISizeConstraint", { MaxSize = Vector2.new(900, 680) }, window)
+local windowScale = mk("UIScale", { Scale = 1 }, window)
+
+local header = mk("Frame", { Size = UDim2.new(1, 0, 0, 64), BackgroundTransparency = 1 }, window)
+text(header, { Text = "SHOP", Font = TITLE_FONT, Size = UDim2.new(0.4, 0, 0, 46), Position = UDim2.fromOffset(20, 10), TextXAlignment = Enum.TextXAlignment.Left, StrokeThickness = 4 })
+local coinsLabel = text(header, { Text = "🪙 0", Size = UDim2.new(0.3, 0, 0, 34), AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -80, 0, 16), TextXAlignment = Enum.TextXAlignment.Right, TextColor3 = C3(255, 220, 80) })
+local close = mk("TextButton", { AnchorPoint = Vector2.new(1, 0), Position = UDim2.new(1, -14, 0, 12), Size = UDim2.fromOffset(48, 44), BackgroundColor3 = WHITE, Text = "", AutoButtonColor = true }, header)
+corner(close, 12)
+stroke(close, 3)
+gradient(close, C3(255, 110, 110), C3(220, 40, 40))
+text(close, { Text = "X", Font = TITLE_FONT, Size = UDim2.fromScale(1, 0.8), Position = UDim2.fromScale(0, 0.1) })
+
+local scroll = mk("ScrollingFrame", {
+	Position = UDim2.fromOffset(14, 70),
+	Size = UDim2.new(1, -28, 1, -82),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 8,
+	ScrollBarImageColor3 = C3(200, 200, 230),
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+}, window)
+mk("UIListLayout", { Padding = UDim.new(0, 14), SortOrder = Enum.SortOrder.LayoutOrder, HorizontalAlignment = Enum.HorizontalAlignment.Center }, scroll)
+mk("UIPadding", { PaddingRight = UDim.new(0, 10), PaddingBottom = UDim.new(0, 14) }, scroll)
+
+--------------------------------------------------------------------
+-- Toast + hatch results
+--------------------------------------------------------------------
+local toastLabel = text(window, { Visible = false, ZIndex = 50, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -16), Size = UDim2.new(0.8, 0, 0, 34), TextColor3 = C3(255, 120, 120) })
+local toastToken = 0
+local function toast(msg, color)
+	toastToken += 1
+	local token = toastToken
+	toastLabel.Text = msg
+	toastLabel.TextColor3 = color or C3(255, 120, 120)
+	toastLabel.Visible = true
+	task.delay(2.4, function()
+		if token == toastToken then
+			toastLabel.Visible = false
+		end
+	end)
+end
+
+local results = mk("Frame", { Visible = false, ZIndex = 40, Size = UDim2.fromScale(1, 1), BackgroundColor3 = C3(10, 8, 20), BackgroundTransparency = 0.25 }, window)
+corner(results, 20)
+local resultsTitle = text(results, { ZIndex = 41, Text = "YOU HATCHED", Font = TITLE_FONT, Size = UDim2.new(0.8, 0, 0, 44), AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 18), StrokeThickness = 4 })
+local resultsGrid = mk("Frame", { ZIndex = 41, BackgroundTransparency = 1, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 74), Size = UDim2.new(0.92, 0, 1, -150) }, results)
+mk("UIGridLayout", { CellSize = UDim2.fromOffset(120, 150), CellPadding = UDim2.fromOffset(10, 10), HorizontalAlignment = Enum.HorizontalAlignment.Center, VerticalAlignment = Enum.VerticalAlignment.Center }, resultsGrid)
+local resultsOk = mk("TextButton", { ZIndex = 41, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -18), Size = UDim2.fromOffset(200, 54), BackgroundColor3 = WHITE, Text = "" }, results)
+corner(resultsOk, 14)
+stroke(resultsOk, 3)
+gradient(resultsOk, GREEN_TOP, GREEN_BOT)
+text(resultsOk, { ZIndex = 42, Text = "AWESOME!", Font = TITLE_FONT, Size = UDim2.fromScale(0.9, 0.7), Position = UDim2.fromScale(0.05, 0.15) })
+resultsOk.Activated:Connect(function()
+	results.Visible = false
+end)
+
+--------------------------------------------------------------------
+-- Building blocks
+--------------------------------------------------------------------
+local order = 0
+local function nextOrder()
+	order += 1
+	return order
+end
+
+local function sectionTitle(label)
+	local row = mk("Frame", { Size = UDim2.new(1, 0, 0, 40), BackgroundTransparency = 1, LayoutOrder = nextOrder() }, scroll)
+	mk("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.fromScale(0, 0.5), Size = UDim2.new(1, 0, 0, 3), BackgroundColor3 = C3(120, 120, 160), BorderSizePixel = 0 }, row)
+	local pill = mk("Frame", { AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.5), Size = UDim2.fromOffset(260, 40), BackgroundColor3 = C3(50, 52, 74) }, row)
+	corner(pill, 20)
+	stroke(pill, 3)
+	text(pill, { Text = label, Size = UDim2.fromScale(0.9, 0.72), Position = UDim2.fromScale(0.05, 0.14) })
+end
+
+-- green (or grey) button with a small caption above it, like "Buy x3"
+local function buyButton(parent, p)
+	local holder = mk("Frame", { BackgroundTransparency = 1, Size = p.size, Position = p.position or UDim2.new(), AnchorPoint = p.anchor or Vector2.zero, LayoutOrder = p.order or 0, ZIndex = 4 }, parent)
+	local top = 0
+	if p.caption then
+		text(holder, { ZIndex = 5, Text = p.caption, Size = UDim2.new(1, 0, 0.3, 0), StrokeThickness = 2 })
+		top = 0.32
+	end
+	local btn = mk("TextButton", { ZIndex = 4, Position = UDim2.fromScale(0, top), Size = UDim2.fromScale(1, 1 - top), BackgroundColor3 = WHITE, Text = "", AutoButtonColor = true }, holder)
+	corner(btn, 12)
+	stroke(btn, 3)
+	local grad = gradient(btn, GREEN_TOP, GREEN_BOT)
+	local label = text(btn, { ZIndex = 5, Text = p.label, Font = TITLE_FONT, Size = UDim2.fromScale(0.86, 0.66), Position = UDim2.fromScale(0.07, 0.17), StrokeThickness = 3 })
+	if p.onClick then
+		btn.Activated:Connect(function()
+			local s = mk("UIScale", { Scale = 0.92 }, btn)
+			TweenService:Create(s, TweenInfo.new(0.12), { Scale = 1 }):Play()
+			game:GetService("Debris"):AddItem(s, 0.2)
+			p.onClick()
+		end)
+	end
+	local api = { frame = holder }
+	function api.set(labelText, enabled)
+		label.Text = labelText
+		grad.Color = enabled == false and ColorSequence.new(GREY_TOP, GREY_BOT) or ColorSequence.new(GREEN_TOP, GREEN_BOT)
+	end
+	return api
+end
+
+local function chip(parent, label, color, p)
+	local f = mk("Frame", { ZIndex = 6, BackgroundColor3 = color, AnchorPoint = p.anchor or Vector2.new(0.5, 0.5), Position = p.position, Size = p.size }, parent)
+	corner(f, 12)
+	stroke(f, 3)
+	text(f, { ZIndex = 7, Text = label, Size = UDim2.fromScale(0.88, 0.72), Position = UDim2.fromScale(0.06, 0.14) })
+	return f
+end
+
+-- Robux price: the real one when the item has an id, otherwise the suggested one from ShopItems
+local priceCache = {}
+local function robuxPrice(id, infoType, fallback, apply)
+	apply(ROBUX .. " " .. tostring(fallback))
+	if not id or id <= 0 then
+		return
+	end
+	task.spawn(function()
+		local key = tostring(infoType) .. id
+		if priceCache[key] == nil then
+			local ok, info = pcall(MarketplaceService.GetProductInfo, MarketplaceService, id, infoType)
+			priceCache[key] = ok and info and info.PriceInRobux or false
+		end
+		if priceCache[key] then
+			apply(ROBUX .. " " .. tostring(priceCache[key]))
+		end
+	end)
+end
+
+local function findByKey(list, key)
+	for _, v in ipairs(list) do
+		if v.Key == key then
+			return v
+		end
+	end
+	return nil
+end
+
+--------------------------------------------------------------------
+-- State
+--------------------------------------------------------------------
+local state = nil
+local refreshers = {} -- functions re-run whenever new data arrives
+local function refresh()
+	if not state then
+		return
+	end
+	coinsLabel.Text = "🪙 " .. fmt(state.Coins or 0)
+	for _, f in ipairs(refreshers) do
+		pcall(f)
+	end
+end
+
+DataUpdate.OnClientEvent:Connect(function(snap)
+	state = snap
+	refresh()
+end)
+
+--------------------------------------------------------------------
+-- Eggs
+--------------------------------------------------------------------
+local hatching = false
+local ERRORS = { NotEnoughCoins = "Not enough coins!", Busy = "Hold on, still hatching...", Loading = "Still loading your pets...", Cooldown = "Slow down a little!" }
+
+local function showResults(egg, list)
+	for _, c in ipairs(resultsGrid:GetChildren()) do
+		if c:IsA("GuiObject") then
+			c:Destroy()
+		end
+	end
+	resultsTitle.Text = ("YOU HATCHED %d PET%s!"):format(#list, #list == 1 and "" or "S")
+	for _, r in ipairs(list) do
+		local pet = PetConfig.GetPet(r.petId)
+		local tier = pet and PetConfig.GetTier(pet)
+		local cell = mk("Frame", { ZIndex = 42, BackgroundColor3 = tier and tier.Color or GREY_BOT }, resultsGrid)
+		corner(cell, 14)
+		stroke(cell, 3)
+		gradient(cell, WHITE, C3(120, 120, 140))
+		local ok, model = pcall(PetModelBuilder.Build, r.petId, true)
+		viewport(cell, ok and model or nil, { size = UDim2.new(1, 0, 0.7, 0), facing = -1, z = 43, zoom = 2 })
+		text(cell, { ZIndex = 44, Text = pet and pet.Name or r.petId, Size = UDim2.new(0.92, 0, 0.14, 0), Position = UDim2.new(0.04, 0, 0.7, 0) })
+		text(cell, { ZIndex = 44, Text = r.isNew and "NEW!" or ("+" .. fmt(r.refund or 0) .. " 🪙"), TextColor3 = r.isNew and C3(255, 230, 80) or C3(200, 220, 255), Size = UDim2.new(0.8, 0, 0.13, 0), Position = UDim2.new(0.1, 0, 0.85, 0) })
+	end
+	results.Visible = true
+end
+
+local function hatch(egg, count)
+	if hatching then
+		return
+	end
+	if state and (state.Coins or 0) < egg.Cost * count then
+		toast(("You need 🪙 %s for %d %s%s"):format(fmt(egg.Cost * count), count, egg.Name, count > 1 and "s" or ""))
+		return
+	end
+	hatching = true
+	local got = {}
+	local lastErr
+	for _ = 1, count do
+		local ok, res = pcall(petRequest.InvokeServer, petRequest, "Hatch", egg.Id)
+		if ok and res and not res.ok and res.err == "Cooldown" then
+			task.wait(0.25) -- PetService allows one request every 0.15 s
+			ok, res = pcall(petRequest.InvokeServer, petRequest, "Hatch", egg.Id)
+		end
+		if not ok or not res or not res.ok then
+			lastErr = ok and res and res.err or "Error"
+			break
+		end
+		table.insert(got, res)
+		task.wait(0.18)
+	end
+	hatching = false
+	if #got > 0 then
+		showResults(egg, got)
+	end
+	if lastErr then
+		toast(ERRORS[lastErr] or "Couldn't hatch right now.")
+	end
+	RequestData:FireServer() -- coins changed
+end
+
+local function eggCard(egg)
+	local colors = Items.EggColors[egg.Id] or { C3(120, 140, 170), C3(70, 82, 110) }
+	local card = mk("Frame", { Size = UDim2.new(1, 0, 0, 230), BackgroundColor3 = WHITE, LayoutOrder = nextOrder() }, scroll)
+	corner(card, 18)
+	stroke(card, 4)
+	gradient(card, colors[1], colors[2])
+
+	viewport(card, kitModel(Items.EggIcons[egg.Id] or "EggCommon"), { size = UDim2.new(0.24, 0, 0.92, 0), position = UDim2.new(0.01, 0, 0.04, 0), zoom = 1.45, speed = 0.8 })
+	chip(card, string.upper(egg.Name), colors[2]:Lerp(INK, 0.3), { anchor = Vector2.new(0, 0), position = UDim2.fromOffset(12, 10), size = UDim2.fromOffset(170, 32) })
+
+	-- odds row
+	local row = mk("Frame", { BackgroundTransparency = 1, Position = UDim2.new(0.26, 0, 0, 10), Size = UDim2.new(0.73, 0, 0, 112) }, card)
+	mk("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0.015, 0), HorizontalAlignment = Enum.HorizontalAlignment.Right }, row)
+	for i, odd in ipairs(PetConfig.EggOdds(egg.Id)) do
+		local pet = PetConfig.GetPet(odd.PetId)
+		local slot = mk("Frame", { Size = UDim2.new(0.185, 0, 1, 0), BackgroundColor3 = INK, BackgroundTransparency = 0.55, LayoutOrder = i }, row)
+		corner(slot, 10)
+		local slotStroke = stroke(slot, i == 5 and 4 or 2, i == 5 and WHITE or C3(10, 10, 20))
+		if i == 5 then -- the chase pet gets a rainbow frame
+			local g = mk("UIGradient", { Color = ColorSequence.new({
+				ColorSequenceKeypoint.new(0, C3(255, 60, 60)), ColorSequenceKeypoint.new(0.25, C3(255, 220, 60)),
+				ColorSequenceKeypoint.new(0.5, C3(60, 255, 120)), ColorSequenceKeypoint.new(0.75, C3(60, 160, 255)),
+				ColorSequenceKeypoint.new(1, C3(220, 80, 255)) }) }, slotStroke)
+			table.insert(spinners, { gradient = g })
+		end
+		local ok, model = pcall(PetModelBuilder.Build, odd.PetId, true)
+		viewport(slot, ok and model or nil, { size = UDim2.new(1, 0, 0.78, 0), position = UDim2.fromScale(0, 0.06), facing = -1, zoom = 2.1, speed = 0.5 })
+		text(slot, { ZIndex = 6, Text = ("%g%%"):format(math.floor(odd.Percent * 10 + 0.5) / 10), TextColor3 = C3(255, 230, 90), AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0), Size = UDim2.new(0.9, 0, 0.2, 0) })
+		local pill = mk("Frame", { ZIndex = 6, AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, -4), Size = UDim2.new(0.92, 0, 0.24, 0), BackgroundColor3 = C3(30, 30, 40), BackgroundTransparency = 0.2 }, slot)
+		corner(pill, 10)
+		text(pill, { ZIndex = 7, Text = "❤ +" .. (pet and pet.Boost or 0) .. " HP", TextColor3 = C3(140, 255, 140), Size = UDim2.fromScale(0.9, 0.8), Position = UDim2.fromScale(0.05, 0.1) })
+	end
+
+	-- buy buttons
+	local buttons = mk("Frame", { BackgroundTransparency = 1, Position = UDim2.new(0.26, 0, 0, 132), Size = UDim2.new(0.73, 0, 0, 88) }, card)
+	mk("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0.02, 0), HorizontalAlignment = Enum.HorizontalAlignment.Right }, buttons)
+	local apis = {}
+	for i, count in ipairs(Items.HatchCounts) do
+		apis[count] = buyButton(buttons, {
+			order = i,
+			size = UDim2.new(0.32, 0, 1, 0),
+			caption = "Buy x" .. count,
+			label = "🪙 " .. fmt(egg.Cost * count),
+			onClick = function()
+				hatch(egg, count)
+			end,
+		})
+	end
+	table.insert(refreshers, function()
+		for count, api in pairs(apis) do
+			api.set("🪙 " .. fmt(egg.Cost * count), (state.Coins or 0) >= egg.Cost * count)
+		end
+	end)
+end
+
+--------------------------------------------------------------------
+-- Robux cards
+--------------------------------------------------------------------
+local function cardRow(height)
+	local row = mk("Frame", { Size = UDim2.new(1, 0, 0, height), BackgroundTransparency = 1, LayoutOrder = nextOrder() }, scroll)
+	mk("UIListLayout", { FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0.015, 0), HorizontalAlignment = Enum.HorizontalAlignment.Center }, row)
+	return row
+end
+
+local BADGE_COLORS = { C3(40, 140, 255), C3(255, 60, 140), C3(255, 160, 20), C3(170, 60, 255) }
+
+local function productCard(row, count, i, item, top, bottom)
+	local def = findByKey(Config.Products, item.Key)
+	if not def then
+		return
+	end
+	local card = mk("Frame", { Size = UDim2.new(1 / count - 0.015, 0, 1, 0), BackgroundColor3 = WHITE, LayoutOrder = i }, row)
+	corner(card, 16)
+	stroke(card, 4)
+	gradient(card, top, bottom)
+	local hasBadge = item.Badge ~= nil
+	if hasBadge then
+		chip(card, item.Badge, BADGE_COLORS[i] or BADGE_COLORS[1], { anchor = Vector2.new(0.5, 0), position = UDim2.new(0.5, 0, 0, 8), size = UDim2.new(0.86, 0, 0, 32) })
+	end
+	viewport(card, kitModel(item.Icon), { size = UDim2.new(0.9, 0, 0.44, 0), position = UDim2.new(0.05, 0, hasBadge and 0.17 or 0.06, 0), zoom = 1.6 })
+	local pill = mk("Frame", { ZIndex = 4, AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0.63, 0), Size = UDim2.new(0.86, 0, 0.12, 0), BackgroundColor3 = INK, BackgroundTransparency = 0.45 }, card)
+	corner(pill, 12)
+	local line = item.Line or (def.Kind == "Coins" and ("+" .. fmt(def.Coins) .. " Coins") or def.Name)
+	text(pill, { ZIndex = 5, Text = line, Size = UDim2.fromScale(0.9, 0.8), Position = UDim2.fromScale(0.05, 0.1) })
+	local btn = buyButton(card, {
+		anchor = Vector2.new(0.5, 1),
+		position = UDim2.new(0.5, 0, 1, -10),
+		size = UDim2.new(0.86, 0, 0.18, 0),
+		label = ROBUX,
+		onClick = function()
+			PromptProduct:FireServer(item.Key)
+		end,
+	})
+	robuxPrice(def.Id, Enum.InfoType.Product, item.Robux, function(s)
+		btn.set(s, true)
+	end)
+	return card
+end
+
+local function passCard(row, i, item)
+	local def = findByKey(Config.Passes, item.Key)
+	if not def then
+		return
+	end
+	local card = mk("Frame", { Size = UDim2.new(0.485, 0, 1, 0), BackgroundColor3 = WHITE, LayoutOrder = i }, row)
+	corner(card, 16)
+	stroke(card, 4)
+	gradient(card, item.Color:Lerp(WHITE, 0.25), item.Color:Lerp(INK, 0.25))
+	local circle = mk("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.04, 0, 0.5, 0), Size = UDim2.fromScale(0.4, 0.85), BackgroundColor3 = WHITE, BackgroundTransparency = 0.7 }, card)
+	mk("UIAspectRatioConstraint", { AspectRatio = 1 }, circle)
+	corner(circle, 999)
+	viewport(circle, kitModel(item.Icon), { zoom = 1.5 })
+	chip(circle, item.Badge, C3(50, 52, 74), { anchor = Vector2.new(0.5, 1), position = UDim2.new(0.5, 0, 1, 4), size = UDim2.new(0.6, 0, 0.24, 0) })
+	text(card, { Text = def.Name, Font = TITLE_FONT, Position = UDim2.new(0.48, 0, 0.1, 0), Size = UDim2.new(0.48, 0, 0.24, 0) })
+	text(card, { Text = item.Line, Position = UDim2.new(0.48, 0, 0.36, 0), Size = UDim2.new(0.48, 0, 0.17, 0) })
+	local btn = buyButton(card, {
+		position = UDim2.new(0.5, 0, 0.6, 0),
+		size = UDim2.new(0.44, 0, 0.3, 0),
+		label = ROBUX,
+		onClick = function()
+			if not (state and state.Passes and state.Passes[item.Key]) then
+				PromptPass:FireServer(item.Key)
+			end
+		end,
+	})
+	local priceText = ROBUX .. " " .. item.Robux
+	robuxPrice(def.Id, Enum.InfoType.GamePass, item.Robux, function(s)
+		priceText = s
+		btn.set(s, not (state and state.Passes and state.Passes[item.Key]))
+	end)
+	table.insert(refreshers, function()
+		local owned = state.Passes and state.Passes[item.Key]
+		btn.set(owned and "Owned!" or priceText, not owned)
+	end)
+end
+
+--------------------------------------------------------------------
+-- Trails (coins)
+--------------------------------------------------------------------
+local function trailCards()
+	local grid = mk("Frame", { Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, BackgroundTransparency = 1, LayoutOrder = nextOrder() }, scroll)
+	mk("UIGridLayout", { CellSize = UDim2.new(0.235, 0, 0, 200), CellPadding = UDim2.new(0.018, 0, 0, 12), HorizontalAlignment = Enum.HorizontalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder }, grid)
+	for i, c in ipairs(Config.Cosmetics) do
+		local card = mk("Frame", { BackgroundColor3 = WHITE, LayoutOrder = i }, grid)
+		corner(card, 16)
+		stroke(card, 4)
+		gradient(card, c.Color1:Lerp(INK, 0.15), c.Color2:Lerp(INK, 0.55))
+		viewport(card, kitModel(Items.TrailIcon, c.Color1), { size = UDim2.new(0.9, 0, 0.5, 0), position = UDim2.new(0.05, 0, 0.04, 0), zoom = 1.5 })
+		text(card, { Text = c.Name, Position = UDim2.new(0.05, 0, 0.55, 0), Size = UDim2.new(0.9, 0, 0.14, 0) })
+		local btn = buyButton(card, {
+			anchor = Vector2.new(0.5, 1),
+			position = UDim2.new(0.5, 0, 1, -10),
+			size = UDim2.new(0.86, 0, 0.22, 0),
+			label = "",
+			onClick = function()
+				if not state then
+					return
+				end
+				if state.Owned and state.Owned[c.Id] then
+					EquipCosmetic:FireServer(state.Equipped == c.Id and "" or c.Id)
+				elseif c.RequiresPass then
+					PromptPass:FireServer(c.RequiresPass)
+				elseif c.IndexReward then
+					toast(c.IndexReward, C3(200, 220, 255))
+				else
+					BuyCosmetic:FireServer(c.Id)
+				end
+			end,
+		})
+		table.insert(refreshers, function()
+			if state.Owned and state.Owned[c.Id] then
+				btn.set(state.Equipped == c.Id and "Equipped" or "Equip", state.Equipped ~= c.Id)
+			elseif c.RequiresPass then
+				btn.set(c.RequiresPass .. " pass", true)
+			elseif c.IndexReward then
+				btn.set("🔒 Index", false)
+			else
+				btn.set("🪙 " .. fmt(c.Price), (state.Coins or 0) >= c.Price)
+			end
+		end)
+	end
+end
+
+--------------------------------------------------------------------
+-- Free item (the daily reward)
+--------------------------------------------------------------------
+local function freeCard()
+	sectionTitle("Free Item")
+	local card = mk("Frame", { Size = UDim2.new(0.7, 0, 0, 170), BackgroundColor3 = WHITE, LayoutOrder = nextOrder() }, scroll)
+	corner(card, 18)
+	stroke(card, 4)
+	gradient(card, C3(80, 190, 255), C3(20, 110, 230))
+	local circle = mk("Frame", { AnchorPoint = Vector2.new(0, 0.5), Position = UDim2.new(0.03, 0, 0.5, 0), Size = UDim2.fromScale(0.3, 0.85), BackgroundColor3 = WHITE, BackgroundTransparency = 0.6 }, card)
+	mk("UIAspectRatioConstraint", { AspectRatio = 1 }, circle)
+	corner(circle, 999)
+	viewport(circle, kitModel(Items.FreeIcon), { zoom = 1.5 })
+	local dayChip = chip(circle, "Day 1", C3(50, 52, 74), { anchor = Vector2.new(0, 1), position = UDim2.new(0.02, 0, 1, 0), size = UDim2.new(0.5, 0, 0.24, 0) })
+	text(card, { Text = "Free Coins!", Font = TITLE_FONT, TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.new(0.36, 0, 0.08, 0), Size = UDim2.new(0.6, 0, 0.22, 0) })
+	text(card, { Text = "Claim your daily reward!", TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.new(0.36, 0, 0.32, 0), Size = UDim2.new(0.6, 0, 0.14, 0) })
+	local amount = text(card, { Text = "🪙 0", TextColor3 = C3(140, 255, 120), TextXAlignment = Enum.TextXAlignment.Left, Position = UDim2.new(0.36, 0, 0.47, 0), Size = UDim2.new(0.4, 0, 0.13, 0) })
+	local claimed = text(card, { Text = "Claimed!", Font = TITLE_FONT, TextColor3 = C3(180, 255, 140), Position = UDim2.new(0.5, 0, 0.62, 0), Size = UDim2.new(0.45, 0, 0.3, 0), StrokeThickness = 3 })
+	local btn = buyButton(card, {
+		position = UDim2.new(0.55, 0, 0.62, 0),
+		size = UDim2.new(0.38, 0, 0.3, 0),
+		label = "CLAIM!",
+		onClick = function()
+			ClaimDaily:FireServer()
+		end,
+	})
+	local btnFrame = btn.frame
+	table.insert(refreshers, function()
+		amount.Text = "🪙 " .. fmt(state.DailyReward or 0)
+		dayChip:FindFirstChildOfClass("TextLabel").Text = "Day " .. tostring(state.DailyDay or 1)
+		btnFrame.Visible = state.DailyReady == true
+		claimed.Visible = state.DailyReady ~= true
+		btn.set("CLAIM!", true)
+	end)
+end
+
+--------------------------------------------------------------------
+-- Build the page
+--------------------------------------------------------------------
+sectionTitle("Eggs")
+for _, egg in ipairs(PetConfig.Eggs) do
+	eggCard(egg)
+end
+
+sectionTitle("Coin Packs")
+local coinRow = cardRow(250)
+for i, item in ipairs(Items.CoinPacks) do
+	productCard(coinRow, #Items.CoinPacks, i, item, C3(255, 200, 60), C3(255, 130, 20))
+end
+
+sectionTitle("Survival Gear")
+local gearRow = cardRow(230)
+for i, item in ipairs(Items.Gear) do
+	productCard(gearRow, #Items.Gear, i, item, C3(170, 110, 255), C3(100, 40, 200))
+end
+
+sectionTitle("Boosts")
+local passRow = cardRow(170)
+for i, item in ipairs(Items.Passes) do
+	passCard(passRow, i, item)
+end
+
+sectionTitle("Trails")
+trailCards()
+
+freeCard()
+
+--------------------------------------------------------------------
+-- Open / close
+--------------------------------------------------------------------
+local function openShop()
+	if gui.Enabled then
+		return
+	end
+	gui.Enabled = true
+	results.Visible = false
+	windowScale.Scale = 0.85
+	TweenService:Create(windowScale, TweenInfo.new(0.25, Enum.EasingStyle.Back), { Scale = 1 }):Play()
+	RequestData:FireServer()
+	ShopOpened:FireServer()
+	refresh()
+end
+
+local function closeShop()
+	gui.Enabled = false
+end
+close.Activated:Connect(closeShop)
+dim.Activated:Connect(closeShop)
+
+-- shortcut: the old Shop panel is detected by its title text ("🛒 Shop"); if ProgressionClient
+-- renames it, this stops redirecting and the old shop shows again.
+task.spawn(function()
+	local progressionUI = playerGui:WaitForChild("ProgressionUI", 60)
+	local panel = progressionUI and progressionUI:WaitForChild("Panel", 30)
+	if not panel then
+		warn("[ShopUI] ProgressionUI.Panel not found - open the new shop is not hooked up")
+		return
+	end
+	local function check()
+		if not panel.Visible then
+			return
+		end
+		for _, c in ipairs(panel:GetChildren()) do
+			if c:IsA("TextLabel") and string.find(c.Text, "Shop", 1, true) then
+				panel.Visible = false
+				openShop()
+				return
+			end
+		end
+	end
+	panel:GetPropertyChangedSignal("Visible"):Connect(check)
+	for _, c in ipairs(panel:GetChildren()) do
+		if c:IsA("TextLabel") then
+			c:GetPropertyChangedSignal("Text"):Connect(check)
+		end
+	end
+end)
+
+Notify.OnClientEvent:Connect(function(msg, kind)
+	if gui.Enabled and kind == "error" then
+		toast(msg)
+	end
+end)
+
+-- turn the icons + rainbow frames while the shop is open
+RunService.RenderStepped:Connect(function()
+	if not gui.Enabled then
+		return
+	end
+	local t = os.clock()
+	for _, s in ipairs(spinners) do
+		if s.gradient then
+			s.gradient.Rotation = (t * 120) % 360
+		else
+			s.model:PivotTo(CFrame.new(s.center) * CFrame.Angles(0, math.sin(t * s.speed + s.phase) * 0.6, 0) * CFrame.new(s.center):ToObjectSpace(s.base))
+		end
+	end
+end)
+]]></ProtectedString></Properties></Item><Item class="ModuleScript" referent="RBX_ShopItems"><Properties><string name="Name">ShopItems</string><ProtectedString name="Source"><![CDATA[-- ShopItems  (ModuleScript, child of the LobbyUpgrade script; moved to ReplicatedStorage at start)
+--
+-- Everything the new shop shows. Robux items point at ProgressionConfig.Products / Passes by Key,
+-- so buying still goes through ProgressionServer exactly as before.
+--
+-- To sell for real: create the developer products / passes in Creator Hub (Monetization) and paste
+-- their ids into ProgressionConfig (existing items) or NewProducts below (the two new coin packs).
+-- While an id is 0 the card shows the `Robux` price written here and the server answers
+-- "isn't set up yet". Once an id is set, the shop shows the real price from Roblox.
+
+local ShopItems = {}
+
+-- New coin packs. LobbyUpgrade adds these to ProgressionConfig.Products on the server (Kind "Coins"
+-- is already paid out by ProgressionServer), and the shop adds them on each client for display.
+ShopItems.NewProducts = {
+	{ Key = "Coins6000", Id = 0, Kind = "Coins", Coins = 6000, Name = "6,000 Coins", Desc = "Instant coins" },
+	{ Key = "Coins15000", Id = 0, Kind = "Coins", Coins = 15000, Name = "15,000 Coins", Desc = "Instant coins" },
+}
+
+-- Icon = Blender prop shown in the card (LobbyKitProps). Robux = price shown while the id is 0.
+ShopItems.CoinPacks = {
+	{ Key = "Coins500", Icon = "CoinsS", Badge = "Good Value", Robux = 25 },
+	{ Key = "Coins2500", Icon = "CoinsM", Badge = "Better Value", Robux = 99 },
+	{ Key = "Coins6000", Icon = "CoinsL", Badge = "Great Value", Robux = 199 },
+	{ Key = "Coins15000", Icon = "CoinsXL", Badge = "Most Value", Robux = 399 },
+}
+
+ShopItems.Gear = {
+	{ Key = "StreakSaver", Icon = "Shield", Line = "+1 Streak Saver", Robux = 35 },
+	{ Key = "Revive", Icon = "ReviveHeart", Line = "+1 Revive", Robux = 25 },
+	{ Key = "ServerLuck", Icon = "Clover", Line = "3x Server Luck", Robux = 99 },
+}
+
+ShopItems.Passes = {
+	{ Key = "DoubleCoins", Icon = "CoinX2", Badge = "x2", Line = "coins from every round!", Robux = 149, Color = Color3.fromRGB(40, 140, 255) },
+	{ Key = "VIP", Icon = "Crown", Badge = "VIP", Line = "rainbow trail + VIP perks", Robux = 249, Color = Color3.fromRGB(150, 80, 255) },
+}
+
+ShopItems.EggIcons = { CommonEgg = "EggCommon", RareEgg = "EggRare", MythicEgg = "EggMythic" }
+ShopItems.EggColors = {
+	CommonEgg = { Color3.fromRGB(120, 140, 170), Color3.fromRGB(70, 82, 110) },
+	RareEgg = { Color3.fromRGB(60, 150, 255), Color3.fromRGB(30, 70, 190) },
+	MythicEgg = { Color3.fromRGB(170, 80, 255), Color3.fromRGB(90, 30, 170) },
+}
+ShopItems.HatchCounts = { 1, 3, 10 }
+ShopItems.TrailIcon = "TrailSwirl"
+ShopItems.FreeIcon = "GiftBox"
+
+-- Adds NewProducts to a ProgressionConfig table (skips keys that are already there)
+function ShopItems.AddProducts(Config)
+	for _, p in ipairs(ShopItems.NewProducts) do
+		local found = false
+		for _, existing in ipairs(Config.Products) do
+			if existing.Key == p.Key then
+				found = true
+				break
+			end
+		end
+		if not found then
+			table.insert(Config.Products, table.clone(p))
+		end
+	end
+end
+
+return ShopItems
 ]]></ProtectedString></Properties></Item></Item></roblox>

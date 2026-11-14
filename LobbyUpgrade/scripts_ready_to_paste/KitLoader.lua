@@ -46,6 +46,24 @@ local PALETTE = {
 	goldGlow = { Color3.fromRGB(255, 214, 90), "Neon", 0 },
 	greenGlow = { Color3.fromRGB(90, 255, 140), "Neon", 0 },
 	orangeGlow = { Color3.fromRGB(255, 140, 40), "Neon", 0 },
+	cream = { Color3.fromRGB(240, 232, 208), "SmoothPlastic", 0 },
+	spot = { Color3.fromRGB(176, 140, 96), "SmoothPlastic", 0 },
+	pink = { Color3.fromRGB(255, 120, 190), "SmoothPlastic", 0 },
+	ice = { Color3.fromRGB(170, 225, 255), "Ice", 0.15 },
+	water = { Color3.fromRGB(80, 170, 255), "Glass", 0.3 },
+	windWhite = { Color3.fromRGB(255, 255, 255), "SmoothPlastic", 0.45 },
+	dust = { Color3.fromRGB(176, 150, 118), "SmoothPlastic", 0.3 },
+	violet = { Color3.fromRGB(130, 105, 175), "SmoothPlastic", 0.3 },
+	indigo = { Color3.fromRGB(62, 52, 118), "SmoothPlastic", 0.25 },
+	coreGlow = { Color3.fromRGB(255, 236, 205), "Neon", 0.55 },
+	fireTrail = { Color3.fromRGB(255, 120, 30), "Neon", 0.35 },
+	acidGlow = { Color3.fromRGB(140, 255, 60), "Neon", 0 },
+	lavaGlow = { Color3.fromRGB(255, 110, 20), "Neon", 0 },
+	waveDeep = { Color3.fromRGB(10, 80, 160), "Glass", 0.15 },
+	waveLight = { Color3.fromRGB(110, 225, 255), "Glass", 0.25 },
+	foam = { Color3.fromRGB(240, 250, 255), "SmoothPlastic", 0 },
+	sharkGrey = { Color3.fromRGB(100, 118, 140), "SmoothPlastic", 0 },
+	sharkBelly = { Color3.fromRGB(225, 232, 240), "SmoothPlastic", 0 },
 	tint = { Color3.fromRGB(255, 70, 70), "Neon", 0 },
 	x = { Color3.fromRGB(255, 0, 255), "SmoothPlastic", 1 },
 }
@@ -284,6 +302,17 @@ function Kit.fade(model, visible, seconds)
 		if d:IsA("BasePart") and d.Name ~= "KitRoot" then
 			local goal = visible and (d:GetAttribute("KitT") or 0) or 1
 			TweenService:Create(d, TweenInfo.new(seconds), { Transparency = goal }):Play()
+		end
+	end
+end
+
+-- Copies the named props into `folder` (in ReplicatedStorage) so client scripts (shop icons,
+-- disaster effects) can clone them. They are untagged, so KitAnimator leaves the templates alone.
+function Kit.publish(names, folder)
+	for _, name in ipairs(names) do
+		local model = Kit.spawn(name, CFrame.new(), { parent = folder, shadows = false })
+		if model then
+			CollectionService:RemoveTag(model, "KitModel")
 		end
 	end
 end
